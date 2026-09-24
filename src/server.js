@@ -8,7 +8,7 @@ const defaultConfig = require('./config');
 const { createStore } = require('./store');
 const { Ingestor } = require('./ingest');
 const { buildOverview, buildHistory, buildBreakdowns, tribeName } = require('./views');
-const { buildCompare, CompareError } = require('./compare');
+const { buildCompare, CompareError, DEFAULT_RADIUS, MAX_RADIUS } = require('./compare');
 const { applySecurityHeaders, sendEntry, sendJson, ResponseCache, RateLimiter, createStaticServer } = require('./http-utils');
 
 const TTL = 60 * 1000; // API responses change at most once a day; 60 s keeps the database quiet
@@ -186,12 +186,12 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
       case '/api/compare': {
         const name = (q.get('player') || '').trim().slice(0, 40);
         if (!name) return sendJson(req, res, 400, { error: 'Enter a player name' });
-        const above = clampInt(q.get('above'), 0, 25, 10);
-        const below = clampInt(q.get('below'), 0, 25, 10);
+        const radius = clampInt(q.get('radius'), 1, MAX_RADIUS, DEFAULT_RADIUS); // fields
+        const origin = q.get('origin') === 'all' ? 'all' : 'main'; // circle around the capital (default) or around every village
         const days = clampInt(q.get('days'), 0, 3650, 7); // 0 = since the first snapshot
         try {
           return await cached(req, res, url, TTL, () =>
-            buildCompare(store, world, { name, above, below, days, getMap: loadMap, geoOptions: { radius: config.mapRadius, wrap: config.mapWrap } }),
+            buildCompare(store, world, { name, radius, origin, days, getMap: loadMap, geoOptions: { radius: config.mapRadius, wrap: config.mapWrap } }),
           );
         } catch (err) {
           if (err instanceof CompareError) return sendJson(req, res, err.status, { error: err.message, ...err.extra });

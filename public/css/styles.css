@@ -424,7 +424,7 @@ tbody tr.me td {
 }
 table.compact th,
 table.compact td {
-  padding: 7px 7px;
+  padding: 7px 6px;
 }
 .kpi .value.small {
   font-size: 21px;

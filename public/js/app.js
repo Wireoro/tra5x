@@ -528,7 +528,8 @@ async function viewActivity(root, params, alive) {
 
 // ------------------------------------------------------------------ compare
 const COMPARE_PERIODS = [[1, '1 day'], [7, '7 days'], [30, '30 days'], [0, 'Since start']];
-const COMPARE_SIZES = [5, 10, 15, 25];
+const COMPARE_RADII = [25, 50, 75, 100]; // fields
+const DEFAULT_RADIUS = 50;
 const pctSigned = (r) => (r === null || r === undefined ? '-' : `${r > 0 ? '+' : r < 0 ? '-' : ''}${(Math.abs(r) * 100).toFixed(1)}%`);
 const ASC_FIRST = new Set(['name', 'rank', 'distance', 'centre_distance']);
 const pt = (c) => `(${c.x}|${c.y})`;
@@ -548,12 +549,12 @@ function sortLocal(rows, { key, dir }) {
 }
 
 /** Two distance columns: closest approach (headline) and centre-to-centre with the player's spread. */
-function distanceColumns() {
+function distanceColumns(radius) {
   const none = (text = '-') => h('span', { class: 'muted' }, text);
   return [
     {
       label: 'Distance (fields)',
-      hint: 'Closest approach: the shortest distance between any village of yours and any village of theirs. The coordinates are the two villages.',
+      hint: 'Closest approach: the shortest distance from your starting village(s) to any village of theirs. The coordinates are the two villages.',
       r: true,
       sort: 'distance',
       cell: (r) => {
@@ -562,6 +563,13 @@ function distanceColumns() {
         return h('span', { title: `Closest pair of villages: yours ${pt(r.closest.you)}, theirs ${pt(r.closest.them)}` },
           fmt.dec(r.distance), h('span', { class: 'coords' }, `${pt(r.closest.you)} → ${pt(r.closest.them)}`));
       },
+    },
+    {
+      label: 'In range',
+      hint: `How many of their villages are within ${radius} fields of one of yours`,
+      r: true,
+      sort: 'villages_in_range',
+      cell: (r) => (r.is_me ? none('you') : h('span', { title: `${r.villages_in_range} of their ${r.villages} villages are within ${radius} fields of one of yours` }, `${fmt.int(r.villages_in_range)} of ${fmt.int(r.villages)}`)),
     },
     {
       label: 'Centre (fields)',
@@ -595,16 +603,17 @@ function locationTiles(d, kpi) {
 }
 
 /** Plain-language explanation of how the distances are calculated, adapted to the world geometry in use. */
-function distanceNote(g) {
+function distanceNote(g, radius, origin) {
   const size = g.size ? `${g.size} × ${g.size}` : 'unknown size';
   const where = g.wrap
     ? `The map wraps around like a globe (${size} fields, coordinates -${g.radius} to ${g.radius}), so a village at the far east edge is next to one at the far west edge. The shorter way round is always the one measured.`
     : 'This world is treated as having hard edges, so nothing wraps around.';
   const source = g.source === 'configured' ? 'The map size comes from the server settings.' : 'The map size is read from the extent of the tiles in the game\'s map.sql file.';
   return h('details', { class: 'how' },
-    h('summary', null, 'How distance is measured'),
+    h('summary', null, 'How nearby players are found and distance is measured'),
+    h('p', null, h('strong', null, `Who is listed. `), `A player is listed when at least one of their villages is within ${radius} fields of ${origin === 'main' ? 'your capital (or biggest village, if you have no capital)' : 'at least one of your villages'}, which is the same as their closest approach (below) being ${radius} or less. Their other villages may be much further away. ${origin === 'main' ? 'Choose "All my villages" to include everyone who is near any of your villages.' : 'With villages scattered over the map this list can get long: choose "Capital" to measure from one village.'} The # column ranks the listed players by population, so #1 is the biggest of the people around you; it is not the world ranking.`),
     h('p', null, h('strong', null, 'Fields. '), `Distance is the straight line between two villages: the square root of (x difference squared + y difference squared), the same as Travian's own distance. ${where} ${source}`),
-    h('p', null, h('strong', null, 'Distance (closest approach). '), 'Villages are scattered, so a player is not a single point. This column is the shortest distance between any village of yours and any village of theirs, which is the distance at which the two of you can actually reach each other: troops, reinforcements and traders travel from village to village. The coordinates under the number are the two villages that produce it.'),
+    h('p', null, h('strong', null, 'Distance (closest approach). '), `Villages are scattered, so a player is not a single point. This column is the shortest distance between ${origin === 'main' ? 'your capital' : 'any village of yours'} and any village of theirs, which is the distance at which the two of you can actually reach each other: troops, reinforcements and traders travel from village to village. The coordinates under the number are the two villages that produce it.`),
     h('p', null, h('strong', null, 'Centre distance. '), 'A second view of the same question: where each player lives overall. Each player\'s village coordinates are averaged, weighted by village population, and the centre distance is the distance between your centre and theirs. The "spread" under it is how far, on average, that player\'s villages lie from their own centre. When the spread is large compared with the centre distance the centre falls between clusters, so rely on the closest approach instead.'),
     h('p', { class: 'muted' }, 'Travel time is not shown because it depends on unit speed, server speed and your tournament square; the distance in fields is what those are calculated from.'));
 }
@@ -616,8 +625,8 @@ async function viewCompare(root, params, alive) {
   }
   const st = {
     days: params.has('days') ? Number(params.get('days')) : 7,
-    above: COMPARE_SIZES.includes(Number(params.get('above'))) ? Number(params.get('above')) : 10,
-    below: COMPARE_SIZES.includes(Number(params.get('below'))) ? Number(params.get('below')) : 10,
+    radius: COMPARE_RADII.includes(Number(params.get('radius'))) ? Number(params.get('radius')) : DEFAULT_RADIUS,
+    origin: params.get('origin') === 'all' ? 'all' : 'main',
     sort: { key: 'rank', dir: 'asc' },
     metric: 'gain',
   };
@@ -625,12 +634,13 @@ async function viewCompare(root, params, alive) {
 
   const out = h('div', { class: 'stack' });
   const periodHost = h('div');
+  const radiusHost = h('div');
+  const originHost = h('div');
   const nameIn = h('input', { type: 'search', id: 'cname', placeholder: 'your player name', value: name, autocomplete: 'off', 'aria-label': 'Player name' });
-  const sizeSel = (id, label, key) => h('label', null, label,
-    h('select', { id, onchange: (e) => { st[key] = Number(e.target.value); load(); } }, COMPARE_SIZES.map((n) => h('option', { value: n, selected: n === st[key] }, String(n)))));
   const form = h('form', { class: 'filters', onsubmit: (e) => { e.preventDefault(); name = nameIn.value.trim(); load(); } },
     h('label', null, 'Player', nameIn), h('div', { class: 'field' }, h('span', null, 'Growth period'), periodHost),
-    sizeSel('cabove', 'Ranks above', 'above'), sizeSel('cbelow', 'Ranks below', 'below'),
+    h('div', { class: 'field' }, h('span', null, 'Within (fields)'), radiusHost),
+    h('div', { class: 'field' }, h('span', null, 'Measured from'), originHost),
     h('button', { class: 'btn', type: 'submit' }, 'Compare'));
   clear(root).append(h('div', { class: 'stack' }, form, out));
 
@@ -638,13 +648,15 @@ async function viewCompare(root, params, alive) {
     const q = new URLSearchParams();
     if (name) q.set('player', name);
     q.set('days', String(st.days));
-    q.set('above', String(st.above));
-    q.set('below', String(st.below));
+    q.set('radius', String(st.radius));
+    q.set('origin', st.origin);
     history.replaceState(null, '', `#/compare?${q}`);
   };
 
-  function drawPeriods() {
+  function drawControls() {
     clear(periodHost).append(segmented(COMPARE_PERIODS, st.days, (d) => { st.days = d; load(); }, 'Growth period'));
+    clear(originHost).append(segmented([['main', 'Capital'], ['all', 'All my villages']], st.origin, (o) => { st.origin = o; load(); }, 'Measure the distance from all your villages or only from your capital'));
+    clear(radiusHost).append(segmented(COMPARE_RADII.map((r) => [r, String(r)]), st.radius, (r) => { st.radius = r; load(); }, 'Distance from your villages, in fields'));
   }
 
   function drawResult(d) {
@@ -660,11 +672,11 @@ async function viewCompare(root, params, alive) {
     const periodText = !p ? '' : st.days === 0 ? `since the first snapshot (${fmt.dec(days)} days)` : `over ${fmt.dec(days)} days`;
     const kpi = (label, value, note, small = false) => h('div', { class: 'kpi' }, h('div', { class: 'label' }, label), h('div', { class: small ? 'value num small' : 'value num' }, value), note ? h('div', { class: 'delta' }, note) : null);
     out.append(h('div', { class: 'kpis' },
-      kpi('Your rank', `#${fmt.int(me.rank)}`, `${fmt.int(me.population)} population, ${fmt.int(me.villages)} villages`),
+      kpi('Your rank nearby', `#${fmt.int(me.rank)} of ${fmt.int(d.rows.length)}`, `by population, among players within ${fmt.int(d.radius)} fields of ${d.origin === 'main' && d.location && d.location.main ? `your ${d.location.main.capital ? 'capital' : 'biggest village'} ${pt(d.location.main)}` : 'your villages'}`),
       kpi('Your growth', me.gain === null ? '-' : fmt.signed(me.gain), me.gain_pct === null ? 'needs two snapshots' : `${pctSigned(me.gain_pct)} ${periodText}`),
       kpi('Median around you', sum.median_gain_pct === null ? '-' : pctSigned(sum.median_gain_pct), sum.median_gain === null ? '' : `${fmt.signed(Math.round(sum.median_gain))} population, ${sum.compared} players`),
       kpi('Your growth rank', sum.my_growth_position === null ? '-' : `${sum.my_growth_position} of ${sum.compared + 1}`, sum.faster === null ? '' : `${sum.faster} grew faster, ${sum.slower} slower`),
-      kpi('Villages', fmt.int(me.villages), me.village_gain === null ? '' : `${fmt.signed(me.village_gain)} ${periodText}`),
+      kpi('Population', fmt.int(me.population), `${fmt.int(me.villages)} ${me.villages === 1 ? 'village' : 'villages'}${me.village_gain ? `, ${fmt.signed(me.village_gain)} ${periodText}` : ''}`),
       ...locationTiles(d, kpi)));
     if (p && p.truncated) {
       out.append(h('p', { class: 'muted' }, `Only ${fmt.dec(p.actual_days)} days of history are stored, so growth covers that instead of the ${st.days} days you asked for.`));
@@ -691,17 +703,16 @@ async function viewCompare(root, params, alive) {
     if (times.length >= 2) {
       drawMetric();
       drawChart();
-      out.append(card('You against the nearest ranks', 'the closest players above and below you', metricHost, chartHost));
+      out.append(card('You against players of similar size', 'the nearby players closest to you in population', metricHost, chartHost));
     }
 
     // table
     const tableHost = h('div');
     const columns = [
       { label: '#', r: true, sort: 'rank', cell: (r) => fmt.int(r.rank) },
-      { label: 'Player', sort: 'name', cell: (r) => h('span', null, nameButton(r.name, () => openPlayer(r.id)), r.is_me ? ' (you)' : '') },
-      { label: 'Tribe', cell: (r) => tribeCell(r.tribe) },
+      { label: 'Player', sort: 'name', cell: (r) => h('span', null, nameButton(r.name, () => openPlayer(r.id)), r.is_me ? ' (you)' : '', h('span', { class: 'coords' }, tribeCell(r.tribe))) },
       { label: 'Alliance', cell: (r) => (r.alliance_id ? nameButton(`[${r.alliance_tag || r.alliance_id}]`, () => openAlliance(r.alliance_id)) : h('span', { class: 'muted' }, '-')) },
-      ...(d.geometry ? distanceColumns() : []),
+      ...distanceColumns(d.radius),
       { label: 'Population', r: true, sort: 'population', cell: (r) => fmt.int(r.population) },
       { label: 'Growth', r: true, sort: 'gain', cell: (r) => deltaNode(r.gain) },
       { label: 'Growth %', r: true, sort: 'gain_pct', cell: (r) => (r.gain_pct === null ? h('span', { class: 'muted' }, p ? 'new' : '-') : h('span', { class: r.gain_pct > 0 ? 'up' : r.gain_pct < 0 ? 'down' : 'muted' }, pctSigned(r.gain_pct))) },
@@ -725,7 +736,13 @@ async function viewCompare(root, params, alive) {
       }));
     };
     drawTable();
-    out.append(card('Players around you', `${d.above} above, ${d.below} below${p ? `, growth ${periodText}` : ''}. "vs you" compares growth %: ▲ grew faster than you, ▼ slower. Rank change: ▲ moved up.`, tableHost, d.geometry ? distanceNote(d.geometry) : h('p', { class: 'muted' }, 'Distances are not available yet: the village map of the latest snapshot is missing.')));
+    const shown = d.rows.length - 1;
+    const sub = shown === 0 ? `nobody else within ${fmt.int(d.radius)} fields` : `${fmt.int(shown)} ${shown === 1 ? 'player' : 'players'} with a village within ${fmt.int(d.radius)} fields of ${d.origin === 'main' ? 'your capital' : 'yours'}${p ? `, growth ${periodText}` : ''}`;
+    out.append(card(`Players within ${fmt.int(d.radius)} fields`, sub,
+      shown === 0 ? h('p', { class: 'empty' }, `No other player has a village within ${fmt.int(d.radius)} fields of ${d.origin === 'main' ? 'your capital' : 'yours'}. Try a bigger distance.`) : null,
+      d.nearby.truncated ? h('p', { class: 'muted' }, `${fmt.int(d.nearby.total)} players are in range; the ${fmt.int(d.nearby.shown)} nearest are listed. Choose a smaller distance to see everyone.`) : null,
+      h('p', { class: 'muted' }, '# ranks these players by population (1 = most). "vs you" compares growth %: ▲ grew faster than you, ▼ slower. Rank change: places gained (▲) or lost (▼) among these players.'),
+      tableHost, distanceNote(d.geometry, d.radius, d.origin)));
   }
 
   function drawNotFound(err) {
@@ -738,17 +755,17 @@ async function viewCompare(root, params, alive) {
   }
 
   async function load() {
-    drawPeriods();
+    drawControls();
     syncHash();
     if (!name) {
-      clear(out).append(card('Compare with the players around you', null,
-        h('p', null, 'Enter your player name to see the players ranked just above and below you and how much each of them has grown compared with you.'),
+      clear(out).append(card('Compare with the players near you', null,
+        h('p', null, 'Enter your player name to see every player with a village within 50 fields of yours (you can change the distance), ranked among themselves, and how much each of them has grown compared with you.'),
         h('p', { class: 'muted' }, 'Growth is measured between the daily snapshots Tra5x has stored, so the longer periods fill in as history builds up.')));
       return;
     }
     out.classList.add('loading');
     try {
-      const data = await api('compare', { player: name, days: st.days, above: st.above, below: st.below });
+      const data = await api('compare', { player: name, days: st.days, radius: st.radius, origin: st.origin });
       if (!alive()) return;
       try { localStorage.setItem('tra5x-me', data.me.name); } catch { /* storage unavailable */ }
       drawResult(data);

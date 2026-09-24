@@ -277,6 +277,15 @@ class MemoryStore {
     return p ? strip(p) : null;
   }
 
+  async getPlayersByIds(world, ids) {
+    const out = [];
+    for (const id of ids) {
+      const p = this.players.get(`${world}:${id}`);
+      if (p) out.push(strip(p));
+    }
+    return out;
+  }
+
   async getPlayerHistory(playerId, limit = 400) {
     return this.playerHistory
       .filter((r) => r.player_id === playerId)

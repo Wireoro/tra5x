@@ -78,6 +78,52 @@ function closestApproach(g, a, b) {
   return best;
 }
 
+/**
+ * Every player (Natars excluded) that owns at least one village within `radius` fields of any village in `mine`.
+ * For each: the closest pair of villages, and how many of their villages are inside the radius.
+ * A player is "nearby" exactly when their closest approach is <= radius, so the list and the Distance column agree.
+ * @param {object} map compact village map (ver >= 2)
+ * @param {Array<{x:number,y:number}>} mine
+ * @returns {Map<number, {distance:number, from:{x,y}, to:{x,y}, inRange:number}>}
+ */
+function nearbyPlayers(g, map, mine, radius, { exclude = null, natarTribe = 5 } = {}) {
+  const out = new Map();
+  if (!mine.length || !(radius >= 0)) return out;
+  const r2 = radius * radius;
+  const n = map.u.length;
+  for (let v = 0; v < n; v++) {
+    if (map.t[v] === natarTribe) continue;
+    const id = map.pi[map.u[v]];
+    if (id === exclude) continue;
+    const x = map.x[v];
+    const y = map.y[v];
+    let best = Infinity;
+    let from = null;
+    for (const m of mine) {
+      const dx = axisDelta(g, m.x, x);
+      if (dx > radius) continue;
+      const dy = axisDelta(g, m.y, y);
+      const d2 = dx * dx + dy * dy;
+      if (d2 < best) {
+        best = d2;
+        from = m;
+      }
+    }
+    if (best > r2) continue;
+    const cur = out.get(id);
+    if (!cur) out.set(id, { distance: Math.sqrt(best), from: { x: from.x, y: from.y }, to: { x, y }, inRange: 1 });
+    else {
+      cur.inRange++;
+      if (Math.sqrt(best) < cur.distance) {
+        cur.distance = Math.sqrt(best);
+        cur.from = { x: from.x, y: from.y };
+        cur.to = { x, y };
+      }
+    }
+  }
+  return out;
+}
+
 const round1 = (n) => Math.round(n * 10) / 10;
 
 /**
@@ -138,4 +184,4 @@ function mainVillage(villages) {
   return { x: v.x, y: v.y, capital: Boolean(cap), name: v.name };
 }
 
-module.exports = { worldGeometry, axisDelta, distance, villagesByPlayer, closestApproach, centre, mainVillage, round1 };
+module.exports = { worldGeometry, axisDelta, distance, villagesByPlayer, closestApproach, nearbyPlayers, centre, mainVillage, round1 };

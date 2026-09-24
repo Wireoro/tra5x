@@ -12,7 +12,7 @@ Macro statistics dashboard for the Travian world **rog.x5.international.travian.
 | Alliances | Sortable table; detail dialog with member list and population history. |
 | Trends | Population, villages, players, alliances over time; player churn; population by tribe; top-5 alliances; population concentration (top 10 / top 100 share). Ranges 7 / 30 / 90 days / all. |
 | Activity | Change log between daily snapshots: villages founded / conquered / lost, new and departed players, alliance joins, leaves and switches, alliances founded and dissolved. Player and alliance dialogs show their own recent activity. |
-| Compare | Type a player name: the players ranked just above and below (5 to 25 each way) with population, villages and rank, and how much each grew over 1 day, 7 days, 30 days or since the first snapshot. Every row shows the difference in growth against that player ("vs you": ▲ grew faster, ▼ slower), the village and rank change, and **how far away the player is** (see "How distances are measured"), plus a chart of that player against the nearest ranks and a summary (median growth around you, your growth rank, your centre, your nearest neighbour). Links like `#/compare?player=Name&days=7` can be shared; a mistyped name shows "did you mean" suggestions. |
+| Compare | Type a player name: every player with a village within 50 fields of that player's capital (25 / 50 / 75 / 100, or measured from all villages instead), **ranked among themselves by population** (#1 = the biggest of the people around you, not the world rank), with how much each grew over 1 day, 7 days, 30 days or since the first snapshot. Every row shows the difference in growth against that player ("vs you": ▲ grew faster, ▼ slower), village and rank change (places gained among these players), the distance in fields (closest villages, with coordinates), how many of their villages are in range, and the centre distance. Plus a chart of that player against nearby players of similar size and a summary (median growth, growth rank, your centre, nearest neighbour). Links like `#/compare?player=Name&days=7&radius=50` can be shared; a mistyped name shows "did you mean" suggestions. |
 
 Every chart has a "Table view" with the same numbers, and there is a light and a dark theme.
 
@@ -67,7 +67,14 @@ world reset, village events are skipped for that day and a warning is logged.
 `players` and `alliances` hold the current state, with the previous population for the 24 h deltas. `map_cache` holds the
 latest compact village list, used to detect village changes and to measure distances between players.
 
-### How distances are measured (Compare tab)
+### How nearby players and distances are measured (Compare tab)
+
+**Who is listed.** A player is listed when at least one of their villages is within the chosen radius (default 50 fields) of
+the starting point, which is the same as their closest approach (below) being at most the radius. The starting point is your
+capital (or your biggest village when none is flagged) by default: one circle around home. With "All my villages" it is
+every village of yours, which is right for "who can reach any of my villages" but gives a long list when your villages are
+scattered (up to 300 players are returned, nearest first). The `#` column ranks the listed players by population; rank
+change compares that ranking now and at the start of the period for the players that existed at both times.
 
 Distance is the straight line between two villages, in fields: the square root of (x difference² + y difference²), as in
 the game. The map wraps around like a globe (Travian support: "Guide: The Map"), so the shorter way round is used on each
@@ -76,8 +83,8 @@ tiles in `map.sql` (it lists every tile, empty ones included).
 
 A player owns scattered villages, so two numbers are given, each exactly defined:
 
-- **Distance = closest approach**: the shortest distance between any village of yours and any village of theirs (the two
-  villages are shown). This is the distance at which two players can actually reach each other, and is the headline number.
+- **Distance = closest approach**: the shortest distance between the starting point (your capital by default, or any village of
+  yours) and any village of theirs (the two villages are shown). This is the distance at which two players can actually reach each other, and is the headline number.
 - **Centre**: the distance between the two players' centres of gravity, i.e. village coordinates averaged with the village
   population as weight (computed as a circular mean so that villages on both sides of the map edge do not average out to the
   middle of the map). Each player also gets a **spread**, the average distance of their villages from their own centre. When
@@ -130,7 +137,7 @@ service fits within Render's 750 free hours a month). As a second safety net, a 
 ## Run locally
 
 ```bash
-npm test                 # 51 tests: parser, aggregation, ingestion rules, change log, compare + distances, API, security, rate limit, Supabase client
+npm test                 # 54 tests: parser, aggregation, ingestion rules, change log, compare + distances, API, security, rate limit, Supabase client
 npm run demo             # dashboard on http://127.0.0.1:3000 with SYNTHETIC data (21 fake days), in-memory store
 node --env-file=.env src/server.js   # real run: needs SUPABASE_SERVICE_ROLE_KEY in .env
 npm run ingest           # one-shot download + store (cron / GitHub Actions friendly), add -- --force to override checks
@@ -144,7 +151,7 @@ Without Supabase credentials the server uses the in-memory store and says so in 
 `/api/players/:id` (with history and recent events) - `/api/alliances?q=&sort=&dir=&limit=&offset=` - `/api/alliances/:id` -
 `/api/events?kind=village|alliance|player|<kind,...>&player=&alliance=&snapshot=&limit=&offset=` -
 `/api/breakdowns?kind=region|ring|quadrant|pop_bucket|village_bucket&days=` -
-`/api/compare?player=<name or id>&above=10&below=10&days=7` (days=0: since the first snapshot; rows carry `distance`, `centre_distance`, `spread`) - `/api/movers` -
+`/api/compare?player=<name or id>&radius=50&origin=main|all&days=7` (radius 1-200 fields; days=0: since the first snapshot; rows carry `rank`, `world_rank`, `distance`, `closest`, `villages_in_range`, `centre_distance`, `spread`) - `/api/movers` -
 `POST /api/admin/refresh` (bearer token).
 
 ## Troubleshooting

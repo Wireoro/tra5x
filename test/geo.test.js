@@ -86,6 +86,48 @@ test('centre of gravity: weighted by population and correct across the seam', ()
   assert.deepEqual(geo.centre(R200, [{ x: 5, y: 5, pop: 0 }]).x, 5);
 });
 
+test('nearbyPlayers: everyone with a village within the radius, across the seam, without Natars or yourself', () => {
+  // three players; owner index -> id via pi. Tribe 5 = Natars.
+  const map = {
+    pi: [10, 20, 30, 40],
+    x: [], y: [], t: [], u: [],
+  };
+  const put = (owner, x, y, tribe = 1) => { map.x.push(x); map.y.push(y); map.t.push(tribe); map.u.push(owner); };
+  put(0, 0, 0); // 10 is "me" (mine below)
+  put(1, 30, 40); // 20: exactly 50 away, on the radius -> included
+  put(1, 3, 4); // 20 again: 5 away -> this is their closest, and 2 villages are in range
+  put(2, 51, 0); // 30: 51 away -> outside
+  put(2, -199, 0); // 30 again: 199 away either way round -> still outside
+  put(3, 7, 0, 5); // 40: a Natar village 7 away -> never listed
+  const mine = [{ x: 0, y: 0 }];
+
+  const found = geo.nearbyPlayers(R200, map, mine, 50, { exclude: 10 });
+  assert.deepEqual([...found.keys()].sort(), [20]);
+  const f = found.get(20);
+  near(f.distance, 5);
+  assert.deepEqual([f.from, f.to], [{ x: 0, y: 0 }, { x: 3, y: 4 }]);
+  assert.equal(f.inRange, 2);
+
+  // exactly on the radius counts, a hair outside does not
+  assert.ok(geo.nearbyPlayers(R200, map, mine, 50).has(20));
+  const edge = { pi: [1], x: [30], y: [40], t: [1], u: [0] };
+  assert.ok(geo.nearbyPlayers(R200, edge, mine, 50).has(1));
+  assert.ok(!geo.nearbyPlayers(R200, edge, mine, 49.99).has(1));
+
+  // the neighbour on the other side of the map edge is found when the map wraps, and not on a flat map
+  const seam = { pi: [7], x: [-198], y: [3], t: [1], u: [0] };
+  const flat = geo.worldGeometry({ minX: -200, maxX: 200, minY: -200, maxY: 200 }, { wrap: false });
+  const nearSeam = [{ x: 199, y: 0 }];
+  assert.ok(geo.nearbyPlayers(R200, seam, nearSeam, 10).has(7)); // 4 fields around the edge
+  assert.ok(!geo.nearbyPlayers(flat, seam, nearSeam, 10).has(7)); // 397 fields on a flat map
+
+  // several villages of mine: the closest of all pairs wins, and nothing when there is no village of mine
+  const two = geo.nearbyPlayers(R200, { pi: [5], x: [100], y: [100], t: [1], u: [0] }, [{ x: 0, y: 0 }, { x: 96, y: 103 }], 20);
+  near(two.get(5).distance, 5);
+  assert.deepEqual(two.get(5).from, { x: 96, y: 103 });
+  assert.equal(geo.nearbyPlayers(R200, map, [], 50).size, 0);
+});
+
 test('main village prefers the flagged capital, otherwise the biggest', () => {
   const v = [{ x: 1, y: 1, pop: 900, capital: false, name: 'a' }, { x: 2, y: 2, pop: 100, capital: true, name: 'b' }];
   assert.deepEqual(geo.mainVillage(v), { x: 2, y: 2, capital: true, name: 'b' });
@@ -113,7 +155,8 @@ test('comparison distances match a brute-force calculation over the real village
   const { config, store, world, getMap } = await setup();
   const rowsAll = (await store.listPlayers(config.world, { sort: 'rank', limit: 500 })).rows;
   const me = rowsAll[40];
-  const r = await buildCompare(store, config.world, { name: me.name, above: 6, below: 6, days: 1, getMap });
+  const r = await buildCompare(store, config.world, { name: me.name, radius: 45, origin: 'all', days: 1, getMap });
+  assert.ok(r.rows.length > 5);
 
   assert.deepEqual(r.geometry, { radius: 60, size: 121, wrap: true, source: 'inferred' });
   const g = geo.worldGeometry({ minX: -60, maxX: 60, minY: -60, maxY: 60 });
@@ -152,18 +195,6 @@ test('comparison distances match a brute-force calculation over the real village
   assert.equal(checked, r.rows.length - 1);
 });
 
-test('without a usable map the comparison still works and distances stay empty', async () => {
-  const { config, store } = await setup(1);
-  const p = (await store.listPlayers(config.world, { sort: 'rank', limit: 1, offset: 9 })).rows[0];
-  for (const getMap of [null, async () => null, async () => ({ ver: 1, x: [] }), async () => { throw new Error('db down'); }]) {
-    const r = await buildCompare(store, config.world, { name: p.name, days: 1, getMap });
-    assert.equal(r.geometry, null);
-    assert.equal(r.location, null);
-    assert.ok(r.rows.length > 1);
-    assert.ok(r.rows.every((x) => x.distance === null && x.centre_distance === null && x.centre === null));
-  }
-});
-
 test('MAP_RADIUS and MAP_WRAP change the geometry used by the API', async () => {
   const { config, store } = await setup(1);
   const app = createApp({ config: { ...config, mapRadius: 90, mapWrap: false }, store, logger: silent });
@@ -171,11 +202,11 @@ test('MAP_RADIUS and MAP_WRAP change the geometry used by the API', async () => 
   const base = `http://127.0.0.1:${app.server.address().port}`;
   try {
     const p = (await store.listPlayers(config.world, { sort: 'rank', limit: 1, offset: 9 })).rows[0];
-    const res = await fetch(`${base}/api/compare?player=${encodeURIComponent(p.name)}&days=1`);
+    const res = await fetch(`${base}/api/compare?player=${encodeURIComponent(p.name)}&days=1&radius=40`);
     const body = await res.json();
     assert.equal(res.status, 200);
     assert.deepEqual(body.geometry, { radius: 90, size: 181, wrap: false, source: 'configured' });
-    assert.ok(body.rows.filter((x) => !x.is_me).every((x) => typeof x.distance === 'number' && x.distance >= 0));
+    assert.ok(body.rows.filter((x) => !x.is_me).every((x) => typeof x.distance === 'number' && x.distance >= 0 && x.distance <= 40));
   } finally {
     await new Promise((r) => app.server.close(r));
   }

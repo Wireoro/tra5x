@@ -106,6 +106,16 @@ class SupabaseStore {
     return rows[0] || null;
   }
 
+  /** Current rows of the given players (any order). */
+  async getPlayersByIds(world, ids) {
+    const out = [];
+    for (let i = 0; i < ids.length; i += 150) {
+      const part = ids.slice(i, i + 150);
+      out.push(...(await this.db.selectAll('players', { select: PLAYER_COLS, filters: [['world', 'eq', world], ['id', 'in', part]], order: 'id.asc' })));
+    }
+    return out;
+  }
+
   async getPlayerHistory(playerId, limit = 400) {
     const { rows } = await this.db.select('player_history', {
       select: 'population,villages,alliance_id,rank,tribe,snapshot_id,snapshots(taken_at)',
