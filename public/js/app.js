@@ -780,6 +780,159 @@ async function viewCompare(root, params, alive) {
   await load();
 }
 
+// ------------------------------------------------------------------ regions
+const REGION_RANGES = [[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [0, 'All']];
+const REGION_TOP_N = 5; // regions plotted on the trend chart, same as "Top alliances" in Trends
+const REGION_CAP = 500; // matches the cap in aggregate.js: only the busiest regions are tracked in history
+
+/** Sorts region rows on a numeric or text key; missing values (no data at the reference snapshot) go last. */
+function sortRegions(rows, { key, dir }) {
+  const sign = dir === 'desc' ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const x = a[key];
+    const y = b[key];
+    if (x == null && y == null) return b.villages - a.villages;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sign || b.villages - a.villages;
+  });
+}
+
+/** Breakdown rows (one per snapshot x region) grouped by snapshot, oldest first: {taken_at, regions: Map(key -> {villages, population})}. */
+function regionSnapshots(data) {
+  const bySnap = new Map(data.snapshots.map((snap) => [snap.taken_at, new Map()]));
+  for (const r of data.rows) {
+    const m = bySnap.get(r.taken_at);
+    if (m) m.set(r.key, { villages: r.villages, population: r.population });
+  }
+  return data.snapshots.map((snap) => ({ taken_at: snap.taken_at, regions: bySnap.get(snap.taken_at) }));
+}
+
+async function viewRegions(root, params, alive) {
+  let days = params.has('days') ? Number(params.get('days')) : 30;
+  let metric = params.get('metric') === 'population' ? 'population' : 'villages';
+  if (!REGION_RANGES.some(([d]) => d === days)) days = 30;
+  const body = h('div', { class: 'stack' });
+  const rangeHost = h('div', { class: 'filters' });
+  clear(root).append(h('div', { class: 'stack' }, rangeHost, body));
+
+  const syncHash = () => {
+    const q = new URLSearchParams();
+    q.set('days', String(days));
+    q.set('metric', metric);
+    history.replaceState(null, '', `#/regions?${q}`);
+  };
+
+  function draw(data) {
+    const snaps = regionSnapshots(data);
+    if (!snaps.length) {
+      clear(body).append(card('Regional overview', null, h('p', { class: 'empty' }, 'No snapshot has been stored yet.')));
+      return;
+    }
+    if (!snaps.some((snap) => snap.regions.size)) {
+      clear(body).append(card('Regional overview', null,
+        h('p', { class: 'empty' }, "No region data in this world's map.sql export. Not every Travian world labels its villages with a region.")));
+      return;
+    }
+    const latest = snaps[snaps.length - 1];
+    const previous = snaps.length >= 2 ? snaps[snaps.length - 2] : null;
+
+    const regions = [...latest.regions.entries()]
+      .map(([key, cur]) => {
+        const prev = previous ? previous.regions.get(key) : null;
+        return {
+          key,
+          villages: cur.villages,
+          population: cur.population,
+          avg_pop: cur.villages ? cur.population / cur.villages : 0,
+          village_gain: prev ? cur.villages - prev.villages : null,
+          population_gain: prev ? cur.population - prev.population : null,
+        };
+      })
+      .sort((a, b) => b.villages - a.villages || a.key.localeCompare(b.key));
+
+    const totalVillages = regions.reduce((sum, r) => sum + r.villages, 0);
+    const totalPopulation = regions.reduce((sum, r) => sum + r.population, 0);
+    const biggest = regions[0];
+    const fastest = previous ? [...regions].filter((r) => r.population_gain !== null).sort((a, b) => b.population_gain - a.population_gain)[0] : null;
+
+    const kpi = (label, value, note) => h('div', { class: 'kpi' }, h('div', { class: 'label' }, label), h('div', { class: 'value num' }, value), note ? h('div', { class: 'delta' }, note) : null);
+    const kpis = h('div', { class: 'kpis' },
+      kpi('Regions tracked', fmt.int(regions.length), regions.length >= REGION_CAP ? `capped at the ${fmt.int(REGION_CAP)} busiest` : `${fmt.int(totalVillages)} villages, ${fmt.int(totalPopulation)} population`),
+      biggest ? kpi('Biggest region', biggest.key, `${fmt.int(biggest.villages)} villages, ${fmt.int(biggest.population)} population`) : null,
+      fastest && fastest.population_gain !== null ? kpi('Fastest growing', fastest.key, [deltaNode(fastest.population_gain), ' population since the previous snapshot']) : null);
+
+    // trend chart: the regions biggest right now, tracked over the selected range
+    const chartHost = h('div');
+    const metricHost = h('div', { class: 'filters' });
+    const top = regions.slice(0, REGION_TOP_N).map((r) => r.key);
+    const drawChart = () => {
+      clear(metricHost).append(segmented([['villages', 'Villages'], ['population', 'Population']], metric, (m) => { metric = m; syncHash(); drawChart(); }, 'Chart metric'));
+      const series = top.map((key, i) => ({
+        label: key,
+        color: seriesColor(i + 1),
+        points: snaps.filter((snap) => snap.regions.has(key)).map((snap) => ({ t: Date.parse(snap.taken_at), v: snap.regions.get(key)[metric] })),
+      }));
+      lineChart(chartHost, { series, height: 260, ariaLabel: `${metric === 'villages' ? 'Villages' : 'Population'} of the biggest regions over time` });
+    };
+    drawChart();
+
+    // full table: every tracked region as of the latest snapshot
+    const tableHost = h('div');
+    const sort = { key: 'villages', dir: 'desc' };
+    const columns = [
+      { label: 'Region', sort: 'key', cell: (r) => r.key },
+      { label: 'Villages', r: true, sort: 'villages', cell: (r) => fmt.int(r.villages) },
+      { label: 'Village change', r: true, sort: 'village_gain', cell: (r) => deltaNode(r.village_gain) },
+      { label: 'Population', r: true, sort: 'population', cell: (r) => fmt.int(r.population) },
+      { label: 'Population change', r: true, sort: 'population_gain', cell: (r) => deltaNode(r.population_gain) },
+      { label: 'Avg population / village', r: true, sort: 'avg_pop', cell: (r) => fmt.dec(r.avg_pop) },
+    ];
+    const drawTable = () => {
+      clear(tableHost).append(dataTable({
+        columns,
+        rows: sortRegions(regions, sort),
+        sort,
+        onSort: (key) => {
+          if (sort.key === key) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
+          else {
+            sort.key = key;
+            sort.dir = key === 'key' ? 'asc' : 'desc';
+          }
+          drawTable();
+        },
+      }));
+    };
+    drawTable();
+
+    clear(body).append(
+      kpis,
+      card('Biggest regions over time', `top ${Math.min(REGION_TOP_N, regions.length)} by villages right now`, metricHost, chartHost,
+        snaps.length < 2 ? h('p', { class: 'muted' }, 'Trends appear after the next daily map.sql refresh (server midnight).') : null),
+      card('Regional overview', previous ? `${fmt.date(latest.taken_at)}, change since the previous snapshot` : fmt.date(latest.taken_at), tableHost,
+        h('p', { class: 'muted' }, `Regions come from the "region" field in map.sql, Travian's own labelling of villages; not every world uses it. Up to the ${fmt.int(REGION_CAP)} busiest regions are tracked.`)));
+  }
+
+  async function load() {
+    clear(rangeHost).append(segmented(REGION_RANGES, days, (d) => { days = d; syncHash(); load(); }, 'Time range'));
+    syncHash();
+    body.classList.add('loading');
+    let data;
+    try {
+      data = await api('breakdowns', { kind: 'region', days });
+    } catch (err) {
+      body.classList.remove('loading');
+      clear(body).append(h('p', { class: 'empty' }, `Could not load regions: ${err.message}`));
+      return;
+    }
+    if (!alive()) return;
+    body.classList.remove('loading');
+    disposeCharts();
+    draw(data);
+  }
+  await load();
+}
+
 function renderEmpty(root) {
   const st = statusCache;
   const last = st && st.ingest && st.ingest.lastResult;
@@ -797,8 +950,8 @@ function renderEmpty(root) {
 }
 
 // ------------------------------------------------------------------ router
-const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, compare: viewCompare };
-const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', compare: 'Compare' };
+const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, compare: viewCompare, regions: viewRegions };
+const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', compare: 'Compare', regions: 'Regions' };
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
