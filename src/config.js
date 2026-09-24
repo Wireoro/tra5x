@@ -28,6 +28,10 @@ module.exports = {
   world: server,
   mapUrl: process.env.MAP_SQL_URL || `https://${server}/map.sql`,
   mapFile: process.env.MAP_SQL_FILE || '', // read a local map.sql instead of downloading (dev / offline)
+  // Map geometry for distances. The size is inferred from the extent of the tiles in map.sql; set MAP_RADIUS
+  // (e.g. 200 for a 401 x 401 map) to override it, and MAP_WRAP=false for worlds with hard edges.
+  mapRadius: Math.max(0, int(process.env.MAP_RADIUS, 0)),
+  mapWrap: !/^(0|false|no|off)$/i.test(process.env.MAP_WRAP || 'true'),
   userAgent: process.env.USER_AGENT || 'Tra5x/1.0 (community stats dashboard)',
 
   // Storage

@@ -422,6 +422,21 @@ tbody tr.me td {
   background: var(--wash);
   font-weight: 650;
 }
+table.compact th,
+table.compact td {
+  padding: 7px 7px;
+}
+.kpi .value.small {
+  font-size: 21px;
+  margin-top: 5px;
+}
+.coords {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  white-space: nowrap;
+}
 tbody tr.click {
   cursor: pointer;
 }
@@ -521,6 +536,19 @@ td .rowbtn:hover {
   opacity: 0.45;
   text-decoration: line-through;
 }
+details.how {
+  margin-top: 12px;
+  font-size: 13px;
+}
+details.how summary {
+  cursor: pointer;
+  color: var(--ink-2);
+}
+details.how p {
+  margin: 8px 0 0;
+  max-width: 76ch;
+  line-height: 1.5;
+}
 details.tv {
   margin-top: 8px;
   font-size: 13px;
@@ -576,92 +604,6 @@ details.tv .tablewrap {
 .loading {
   opacity: 0.55;
   transition: opacity 0.12s;
-}
-
-/* ---------- map ---------- */
-.mapbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 10px 16px;
-  margin-bottom: 10px;
-}
-.mapbar label {
-  display: grid;
-  gap: 2px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.mapnote {
-  font-size: 12.5px;
-  color: var(--muted);
-  margin: 2px 0 8px;
-}
-.mapwrap {
-  position: relative;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--surface);
-}
-.mapwrap canvas {
-  display: block;
-  width: 100%;
-  height: min(72vh, 760px);
-  min-height: 380px;
-  touch-action: none;
-  cursor: grab;
-}
-.mapwrap canvas.dragging {
-  cursor: grabbing;
-}
-.mapzoom {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  display: grid;
-  gap: 6px;
-}
-.mapzoom button {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  border: 1px solid var(--axis);
-  background: var(--surface);
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-}
-.mapzoom button:hover {
-  background: var(--wash);
-}
-.mapinfo {
-  position: absolute;
-  left: 10px;
-  bottom: 8px;
-  font-size: 12px;
-  color: var(--ink-2);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px 8px;
-}
-.ramp {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  color: var(--ink-2);
-}
-.ramp .bar {
-  display: flex;
-  height: 10px;
-  width: 140px;
-  border-radius: 3px;
-  overflow: hidden;
-}
-.ramp .bar span {
-  flex: 1;
 }
 
 /* ---------- modal ---------- */

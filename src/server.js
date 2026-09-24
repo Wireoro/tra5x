@@ -21,6 +21,7 @@ const EVENT_GROUPS = {
 const EVENT_KINDS = new Set(Object.values(EVENT_GROUPS).flat());
 const BREAKDOWN_KINDS = new Set(['pop_bucket', 'village_bucket', 'quadrant', 'ring', 'region']);
 const STORAGE_TTL = 10 * 60 * 1000;
+const MAP_TTL = 30 * 60 * 1000;
 const HISTORY_TABLES = ['snapshots', 'tribe_stats', 'player_history', 'alliance_history', 'snapshot_breakdowns', 'events'];
 
 /** `kind=village,player_new` -> list of event kinds (groups expand); null = no filter; [] = nothing valid. */
@@ -53,6 +54,7 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
   store = store || createStore(config, logger);
   const cache = new ResponseCache();
   const storageCache = { at: 0, value: null };
+  const mapMemo = { at: 0, payload: null, pending: null };
   ingestor =
     ingestor ||
     new Ingestor({
@@ -62,11 +64,32 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
       onIngested: () => {
         cache.clear();
         storageCache.at = 0;
+        mapMemo.at = 0;
       },
     });
   const limiter = new RateLimiter(config.rateLimitPerMin);
   const serveStatic = createStaticServer(path.join(__dirname, '..', 'public'));
   const world = config.world;
+
+  /**
+   * The compact village map of the latest snapshot (used for distances). It is several MB when read from the
+   * database, so it is kept in memory and only re-read after a new snapshot or after MAP_TTL.
+   */
+  async function loadMap() {
+    if (mapMemo.payload && Date.now() - mapMemo.at < MAP_TTL) return mapMemo.payload;
+    if (mapMemo.pending) return mapMemo.pending;
+    mapMemo.pending = (async () => {
+      try {
+        const row = await store.getMap(world);
+        mapMemo.payload = row ? row.payload : null;
+        mapMemo.at = Date.now();
+        return mapMemo.payload;
+      } finally {
+        mapMemo.pending = null;
+      }
+    })();
+    return mapMemo.pending;
+  }
 
   /** cached JSON GET */
   const cached = (req, res, url, ttl, produce, opts) =>
@@ -167,7 +190,9 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
         const below = clampInt(q.get('below'), 0, 25, 10);
         const days = clampInt(q.get('days'), 0, 3650, 7); // 0 = since the first snapshot
         try {
-          return await cached(req, res, url, TTL, () => buildCompare(store, world, { name, above, below, days }));
+          return await cached(req, res, url, TTL, () =>
+            buildCompare(store, world, { name, above, below, days, getMap: loadMap, geoOptions: { radius: config.mapRadius, wrap: config.mapWrap } }),
+          );
         } catch (err) {
           if (err instanceof CompareError) return sendJson(req, res, err.status, { error: err.message, ...err.extra });
           throw err;
@@ -181,20 +206,6 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
           return { gainers, losers };
         });
 
-      case '/api/map': {
-        // The map payload only changes when a new snapshot arrives; let browsers keep it for 10 minutes.
-        return cached(
-          req,
-          res,
-          url,
-          10 * 60 * 1000,
-          async () => {
-            const row = await store.getMap(world);
-            return row ? { snapshot_id: row.snapshot_id, updated_at: row.updated_at, ...row.payload } : { empty: true };
-          },
-          { maxAge: 10 * 60 * 1000 },
-        );
-      }
       default:
     }
 

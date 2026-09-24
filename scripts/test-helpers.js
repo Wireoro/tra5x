@@ -12,6 +12,8 @@ function testConfig(over = {}) {
     historyTopPlayers: 0,
     retentionDays: 0,
     maxVillageEvents: 30000,
+    mapRadius: 0,
+    mapWrap: true,
     dbSizeLimitMb: 500,
     autoRefresh: true,
     refreshAfterHours: 20,

@@ -30,7 +30,7 @@ function niceRingWidth(maxDist) {
 
 /**
  * Turns parsed map.sql rows into (a) the aggregated payload consumed by the `ingest_snapshot`
- * SQL function / memory store and (b) a compact village list for the interactive map.
+ * SQL function / memory store and (b) a compact village list (kept for village-change events and for distances between players).
  *
  * Rules: a row is an occupied village when it has a player id > 0. Natars (tribe 5) are counted
  * separately and excluded from player / alliance rankings and totals.

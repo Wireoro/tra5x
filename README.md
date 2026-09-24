@@ -8,12 +8,11 @@ Macro statistics dashboard for the Travian world **rog.x5.international.travian.
 | Tab | Content |
 | --- | --- |
 | Overview | Players, alliances, villages, population with change since the previous snapshot; tribe split (players / villages / population); player-size and villages-per-player distributions; quadrants and distance rings; top 10 players and alliances; biggest gainers and losers. |
-| Players | Searchable, sortable, filterable table (tribe, alliance tag); detail dialog with population history and a link to the map. |
+| Players | Searchable, sortable, filterable table (tribe, alliance tag); detail dialog with population history and recent activity. |
 | Alliances | Sortable table; detail dialog with member list and population history. |
 | Trends | Population, villages, players, alliances over time; player churn; population by tribe; top-5 alliances; population concentration (top 10 / top 100 share). Ranges 7 / 30 / 90 days / all. |
 | Activity | Change log between daily snapshots: villages founded / conquered / lost, new and departed players, alliance joins, leaves and switches, alliances founded and dissolved. Player and alliance dialogs show their own recent activity. |
-| Compare | Type a player name: the players ranked just above and below (5 to 25 each way) with population, villages and rank, and how much each grew over 1 day, 7 days, 30 days or since the first snapshot. Every row shows the difference in growth against that player ("vs you": ▲ grew faster, ▼ slower), the village and rank change, plus a chart of that player against the nearest ranks and a summary (median growth around you, your growth rank). Links like `#/compare?player=Name&days=7` can be shared; a mistyped name shows "did you mean" suggestions. |
-| Map | Canvas map with density heat-map, tribe view, alliance highlight, player search, pan / zoom, hover details. |
+| Compare | Type a player name: the players ranked just above and below (5 to 25 each way) with population, villages and rank, and how much each grew over 1 day, 7 days, 30 days or since the first snapshot. Every row shows the difference in growth against that player ("vs you": ▲ grew faster, ▼ slower), the village and rank change, and **how far away the player is** (see "How distances are measured"), plus a chart of that player against the nearest ranks and a summary (median growth around you, your growth rank, your centre, your nearest neighbour). Links like `#/compare?player=Name&days=7` can be shared; a mistyped name shows "did you mean" suggestions. |
 
 Every chart has a "Table view" with the same numbers, and there is a light and a dark theme.
 
@@ -34,7 +33,7 @@ Render web service (Node 22, zero dependencies)
  |- src/ingest.js      download map.sql (conditional GET + content hash) -> parse -> aggregate
  |- src/store/         Supabase REST (PostgREST over fetch) | in-memory store for demos/tests
  |- src/server.js      JSON API + static dashboard, gzip, ETag, CSP, per-IP rate limit
- '- public/            vanilla JS dashboard, hand-drawn SVG charts, canvas map
+ '- public/            vanilla JS dashboard, hand-drawn SVG charts
 Supabase project "Tra5x" (Paris, eu-west-3, ref fqvdwbrnfbmtvdghkvzr)
  '- tables: snapshots, tribe_stats, snapshot_breakdowns, players, alliances, player_history, alliance_history,
     |         events, map_cache, ingest_log
@@ -66,7 +65,27 @@ produces none. If a single day would create more than `MAX_VILLAGE_EVENTS` (30 0
 world reset, village events are skipped for that day and a warning is logged.
 
 `players` and `alliances` hold the current state, with the previous population for the 24 h deltas. `map_cache` holds the
-latest map for the interactive view.
+latest compact village list, used to detect village changes and to measure distances between players.
+
+### How distances are measured (Compare tab)
+
+Distance is the straight line between two villages, in fields: the square root of (x difference² + y difference²), as in
+the game. The map wraps around like a globe (Travian support: "Guide: The Map"), so the shorter way round is used on each
+axis; on a 401 x 401 map a village at x = 200 is one field from one at x = -200. The map size is read from the extent of the
+tiles in `map.sql` (it lists every tile, empty ones included).
+
+A player owns scattered villages, so two numbers are given, each exactly defined:
+
+- **Distance = closest approach**: the shortest distance between any village of yours and any village of theirs (the two
+  villages are shown). This is the distance at which two players can actually reach each other, and is the headline number.
+- **Centre**: the distance between the two players' centres of gravity, i.e. village coordinates averaged with the village
+  population as weight (computed as a circular mean so that villages on both sides of the map edge do not average out to the
+  middle of the map). Each player also gets a **spread**, the average distance of their villages from their own centre. When
+  the spread is large compared with the centre distance the centre falls between clusters; trust the closest approach then. If
+  a player's villages are spread evenly around the entire world no centre is reported.
+
+Travel time is deliberately not shown: it depends on unit speed, server speed and the tournament square, all of which
+start from the distance in fields.
 
 ### Database size (read this before going live)
 
@@ -111,7 +130,7 @@ service fits within Render's 750 free hours a month). As a second safety net, a 
 ## Run locally
 
 ```bash
-npm test                 # 43 tests: parser, aggregation, ingestion rules, change log, API, security, rate limit, Supabase client
+npm test                 # 51 tests: parser, aggregation, ingestion rules, change log, compare + distances, API, security, rate limit, Supabase client
 npm run demo             # dashboard on http://127.0.0.1:3000 with SYNTHETIC data (21 fake days), in-memory store
 node --env-file=.env src/server.js   # real run: needs SUPABASE_SERVICE_ROLE_KEY in .env
 npm run ingest           # one-shot download + store (cron / GitHub Actions friendly), add -- --force to override checks
@@ -125,7 +144,7 @@ Without Supabase credentials the server uses the in-memory store and says so in 
 `/api/players/:id` (with history and recent events) - `/api/alliances?q=&sort=&dir=&limit=&offset=` - `/api/alliances/:id` -
 `/api/events?kind=village|alliance|player|<kind,...>&player=&alliance=&snapshot=&limit=&offset=` -
 `/api/breakdowns?kind=region|ring|quadrant|pop_bucket|village_bucket&days=` -
-`/api/compare?player=<name or id>&above=10&below=10&days=7` (days=0: since the first snapshot) - `/api/movers` - `/api/map` -
+`/api/compare?player=<name or id>&above=10&below=10&days=7` (days=0: since the first snapshot; rows carry `distance`, `centre_distance`, `spread`) - `/api/movers` -
 `POST /api/admin/refresh` (bearer token).
 
 ## Troubleshooting

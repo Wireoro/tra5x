@@ -1,11 +1,9 @@
 import { h, $, clear, fmt, PLAYER_TRIBES, tribeName, tribeColor, seriesColor, cssVar, debounce, hideTooltip } from './util.js';
 import { api } from './api.js';
 import { lineChart, barChart, disposeCharts, tableView } from './charts.js';
-import { mountMap } from './map.js';
 
 const main = $('#view');
 let token = 0;
-let mapHandle = null;
 let statusCache = null;
 let pollTimer = 0;
 
@@ -26,20 +24,20 @@ function tribeCell(id) {
 }
 
 /**
- * columns: [{label, r?:bool, cell:(row)=>Node|string, sort?:string}]
+ * columns: [{label, r?:bool, cell:(row)=>Node|string, sort?:string, hint?:string (tooltip on the header)}]
  * sort: {key, dir}; onSort(key)
  */
-function dataTable({ columns, rows, sort, onSort, empty = 'Nothing to show.', rowClass }) {
+function dataTable({ columns, rows, sort, onSort, empty = 'Nothing to show.', rowClass, tableClass = '' }) {
   if (!rows.length) return h('p', { class: 'empty' }, empty);
   const head = columns.map((c) => {
     const active = sort && c.sort && sort.key === c.sort;
     const label = c.sort && onSort ? h('button', { type: 'button', onclick: () => onSort(c.sort), 'aria-label': `Sort by ${c.label}` }, c.label, active ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '') : c.label;
-    const th = h('th', { class: c.r ? 'r' : '', scope: 'col' }, label);
+    const th = h('th', { class: c.r ? 'r' : '', scope: 'col', title: c.hint || null }, label);
     if (active) th.setAttribute('aria-sort', sort.dir === 'asc' ? 'ascending' : 'descending');
     return th;
   });
   return h('div', { class: 'tablewrap' },
-    h('table', null, h('thead', null, h('tr', null, head)),
+    h('table', { class: tableClass }, h('thead', null, h('tr', null, head)),
       h('tbody', null, rows.map((row) => h('tr', { class: rowClass ? rowClass(row) : '' }, columns.map((c) => h('td', { class: c.r ? 'r num' : '' }, c.cell(row))))))));
 }
 
@@ -187,7 +185,6 @@ async function openPlayer(id) {
       })));
     }
     body.append(h('p', null,
-      h('a', { href: `#/map?player=${encodeURIComponent(p.name)}`, onclick: () => body.closest('dialog').close() }, 'Show this player on the map'), ' · ',
       h('a', { href: `#/compare?player=${encodeURIComponent(p.name)}`, onclick: () => body.closest('dialog').close() }, 'Compare with the players around')));
     const chart = h('div');
     body.append(h('h3', null, 'Population over time'), chart);
@@ -212,7 +209,6 @@ async function openAlliance(id) {
       h('span', null, 'Villages ', h('b', null, fmt.int(a.villages))),
       h('span', null, 'Population ', h('b', null, fmt.int(a.population))),
       h('span', null, 'Change ', deltaNode(a.pop_delta))));
-    body.append(h('p', null, h('a', { href: `#/map?tag=${encodeURIComponent(a.tag)}`, onclick: () => body.closest('dialog').close() }, 'Highlight this alliance on the map')));
     const chart = h('div');
     body.append(h('h3', null, 'Population over time'), chart);
     if (history.length >= 2) lineChart(chart, { series: [{ label: 'Population', color: seriesColor(1), points: history.map((r) => ({ t: Date.parse(r.taken_at), v: r.population })) }], height: 200, ariaLabel: `Population history of ${a.tag}` });
@@ -534,6 +530,8 @@ async function viewActivity(root, params, alive) {
 const COMPARE_PERIODS = [[1, '1 day'], [7, '7 days'], [30, '30 days'], [0, 'Since start']];
 const COMPARE_SIZES = [5, 10, 15, 25];
 const pctSigned = (r) => (r === null || r === undefined ? '-' : `${r > 0 ? '+' : r < 0 ? '-' : ''}${(Math.abs(r) * 100).toFixed(1)}%`);
+const ASC_FIRST = new Set(['name', 'rank', 'distance', 'centre_distance']);
+const pt = (c) => `(${c.x}|${c.y})`;
 const ptsSigned = (r) => (r === null || r === undefined ? '-' : `${r > 0 ? '▲ +' : r < 0 ? '▼ -' : ''}${(Math.abs(r) * 100).toFixed(1)} pts`);
 
 /** Sorts rows on a numeric or text key; missing values always go last. */
@@ -547,6 +545,68 @@ function sortLocal(rows, { key, dir }) {
     if (y == null) return -1;
     return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sign || a.rank - b.rank;
   });
+}
+
+/** Two distance columns: closest approach (headline) and centre-to-centre with the player's spread. */
+function distanceColumns() {
+  const none = (text = '-') => h('span', { class: 'muted' }, text);
+  return [
+    {
+      label: 'Distance (fields)',
+      hint: 'Closest approach: the shortest distance between any village of yours and any village of theirs. The coordinates are the two villages.',
+      r: true,
+      sort: 'distance',
+      cell: (r) => {
+        if (r.is_me) return none('you');
+        if (r.distance === null) return none();
+        return h('span', { title: `Closest pair of villages: yours ${pt(r.closest.you)}, theirs ${pt(r.closest.them)}` },
+          fmt.dec(r.distance), h('span', { class: 'coords' }, `${pt(r.closest.you)} → ${pt(r.closest.them)}`));
+      },
+    },
+    {
+      label: 'Centre (fields)',
+      hint: 'Distance between the population-weighted centres of the two players. Spread = how far that player\'s villages lie from their own centre, on average.',
+      r: true,
+      sort: 'centre_distance',
+      cell: (r) => {
+        if (r.centre === null) return none();
+        const spread = h('span', { class: 'coords' }, `spread ${fmt.dec(r.spread)}`);
+        const title = `Centre ${pt(r.centre)}, spread ${fmt.dec(r.spread)} fields`;
+        if (r.is_me) return h('span', { title }, none('you'), spread);
+        if (r.centre_distance === null) return h('span', { title }, none(), spread);
+        return h('span', { title }, fmt.dec(r.centre_distance), spread);
+      },
+    },
+  ];
+}
+
+/** Extra KPI tiles: where you live and who is your nearest neighbour. */
+function locationTiles(d, kpi) {
+  const tiles = [];
+  const loc = d.location;
+  if (loc) {
+    const main = loc.main ? `${loc.main.capital ? 'capital' : 'biggest village'} ${pt(loc.main)}` : '';
+    if (loc.centre) tiles.push(kpi('Your centre', pt(loc.centre), `${fmt.int(loc.villages)} ${loc.villages === 1 ? 'village' : 'villages'}, spread ${fmt.dec(loc.spread)} fields${main ? `; ${main}` : ''}`, true));
+    else if (loc.main) tiles.push(kpi('Your location', pt(loc.main), `${main}; villages too widely spread for one centre`, true));
+  }
+  const near = d.rows.filter((r) => !r.is_me && r.distance !== null).sort((a, b) => a.distance - b.distance || a.rank - b.rank)[0];
+  if (near) tiles.push(kpi('Nearest of these', `${fmt.dec(near.distance)} fields`, `${near.name}${near.alliance_tag ? ` [${near.alliance_tag}]` : ''}, closest villages`));
+  return tiles;
+}
+
+/** Plain-language explanation of how the distances are calculated, adapted to the world geometry in use. */
+function distanceNote(g) {
+  const size = g.size ? `${g.size} × ${g.size}` : 'unknown size';
+  const where = g.wrap
+    ? `The map wraps around like a globe (${size} fields, coordinates -${g.radius} to ${g.radius}), so a village at the far east edge is next to one at the far west edge. The shorter way round is always the one measured.`
+    : 'This world is treated as having hard edges, so nothing wraps around.';
+  const source = g.source === 'configured' ? 'The map size comes from the server settings.' : 'The map size is read from the extent of the tiles in the game\'s map.sql file.';
+  return h('details', { class: 'how' },
+    h('summary', null, 'How distance is measured'),
+    h('p', null, h('strong', null, 'Fields. '), `Distance is the straight line between two villages: the square root of (x difference squared + y difference squared), the same as Travian's own distance. ${where} ${source}`),
+    h('p', null, h('strong', null, 'Distance (closest approach). '), 'Villages are scattered, so a player is not a single point. This column is the shortest distance between any village of yours and any village of theirs, which is the distance at which the two of you can actually reach each other: troops, reinforcements and traders travel from village to village. The coordinates under the number are the two villages that produce it.'),
+    h('p', null, h('strong', null, 'Centre distance. '), 'A second view of the same question: where each player lives overall. Each player\'s village coordinates are averaged, weighted by village population, and the centre distance is the distance between your centre and theirs. The "spread" under it is how far, on average, that player\'s villages lie from their own centre. When the spread is large compared with the centre distance the centre falls between clusters, so rely on the closest approach instead.'),
+    h('p', { class: 'muted' }, 'Travel time is not shown because it depends on unit speed, server speed and your tournament square; the distance in fields is what those are calculated from.'));
 }
 
 async function viewCompare(root, params, alive) {
@@ -598,13 +658,14 @@ async function viewCompare(root, params, alive) {
 
     const days = p ? p.actual_days : null;
     const periodText = !p ? '' : st.days === 0 ? `since the first snapshot (${fmt.dec(days)} days)` : `over ${fmt.dec(days)} days`;
-    const kpi = (label, value, note) => h('div', { class: 'kpi' }, h('div', { class: 'label' }, label), h('div', { class: 'value num' }, value), note ? h('div', { class: 'delta' }, note) : null);
+    const kpi = (label, value, note, small = false) => h('div', { class: 'kpi' }, h('div', { class: 'label' }, label), h('div', { class: small ? 'value num small' : 'value num' }, value), note ? h('div', { class: 'delta' }, note) : null);
     out.append(h('div', { class: 'kpis' },
       kpi('Your rank', `#${fmt.int(me.rank)}`, `${fmt.int(me.population)} population, ${fmt.int(me.villages)} villages`),
       kpi('Your growth', me.gain === null ? '-' : fmt.signed(me.gain), me.gain_pct === null ? 'needs two snapshots' : `${pctSigned(me.gain_pct)} ${periodText}`),
       kpi('Median around you', sum.median_gain_pct === null ? '-' : pctSigned(sum.median_gain_pct), sum.median_gain === null ? '' : `${fmt.signed(Math.round(sum.median_gain))} population, ${sum.compared} players`),
       kpi('Your growth rank', sum.my_growth_position === null ? '-' : `${sum.my_growth_position} of ${sum.compared + 1}`, sum.faster === null ? '' : `${sum.faster} grew faster, ${sum.slower} slower`),
-      kpi('Villages', fmt.int(me.villages), me.village_gain === null ? '' : `${fmt.signed(me.village_gain)} ${periodText}`)));
+      kpi('Villages', fmt.int(me.villages), me.village_gain === null ? '' : `${fmt.signed(me.village_gain)} ${periodText}`),
+      ...locationTiles(d, kpi)));
     if (p && p.truncated) {
       out.append(h('p', { class: 'muted' }, `Only ${fmt.dec(p.actual_days)} days of history are stored, so growth covers that instead of the ${st.days} days you asked for.`));
     }
@@ -640,6 +701,7 @@ async function viewCompare(root, params, alive) {
       { label: 'Player', sort: 'name', cell: (r) => h('span', null, nameButton(r.name, () => openPlayer(r.id)), r.is_me ? ' (you)' : '') },
       { label: 'Tribe', cell: (r) => tribeCell(r.tribe) },
       { label: 'Alliance', cell: (r) => (r.alliance_id ? nameButton(`[${r.alliance_tag || r.alliance_id}]`, () => openAlliance(r.alliance_id)) : h('span', { class: 'muted' }, '-')) },
+      ...(d.geometry ? distanceColumns() : []),
       { label: 'Population', r: true, sort: 'population', cell: (r) => fmt.int(r.population) },
       { label: 'Growth', r: true, sort: 'gain', cell: (r) => deltaNode(r.gain) },
       { label: 'Growth %', r: true, sort: 'gain_pct', cell: (r) => (r.gain_pct === null ? h('span', { class: 'muted' }, p ? 'new' : '-') : h('span', { class: r.gain_pct > 0 ? 'up' : r.gain_pct < 0 ? 'down' : 'muted' }, pctSigned(r.gain_pct))) },
@@ -651,18 +713,19 @@ async function viewCompare(root, params, alive) {
     const drawTable = () => {
       clear(tableHost).append(dataTable({
         columns,
+        tableClass: 'compact',
         rows: sortLocal(d.rows, st.sort),
         sort: st.sort,
         rowClass: (r) => (r.is_me ? 'me' : ''),
         onSort: (key) => {
           if (st.sort.key === key) st.sort = { key, dir: st.sort.dir === 'asc' ? 'desc' : 'asc' };
-          else st.sort = { key, dir: key === 'name' || key === 'rank' ? 'asc' : 'desc' };
+          else st.sort = { key, dir: ASC_FIRST.has(key) ? 'asc' : 'desc' }; // nearest first for distances
           drawTable();
         },
       }));
     };
     drawTable();
-    out.append(card('Players around you', `${d.above} above, ${d.below} below${p ? `, growth ${periodText}` : ''}. "vs you" compares growth %: ▲ grew faster than you, ▼ slower. Rank change: ▲ moved up.`, tableHost));
+    out.append(card('Players around you', `${d.above} above, ${d.below} below${p ? `, growth ${periodText}` : ''}. "vs you" compares growth %: ▲ grew faster than you, ▼ slower. Rank change: ▲ moved up.`, tableHost, d.geometry ? distanceNote(d.geometry) : h('p', { class: 'muted' }, 'Distances are not available yet: the village map of the latest snapshot is missing.')));
   }
 
   function drawNotFound(err) {
@@ -700,16 +763,6 @@ async function viewCompare(root, params, alive) {
   await load();
 }
 
-async function viewMap(root, params, alive) {
-  const holder = h('div');
-  clear(root).append(h('div', { class: 'stack' }, card('Map', 'drag to pan, scroll or pinch to zoom, hover a village for details', holder)));
-  holder.append(h('p', { class: 'empty' }, 'Loading the map...'));
-  const data = await api('map');
-  if (!alive()) return;
-  if (data.empty) return renderEmpty(root);
-  mapHandle = mountMap(holder, data, { player: params.get('player') || '', tag: params.get('tag') || '' });
-}
-
 function renderEmpty(root) {
   const st = statusCache;
   const last = st && st.ingest && st.ingest.lastResult;
@@ -727,8 +780,8 @@ function renderEmpty(root) {
 }
 
 // ------------------------------------------------------------------ router
-const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, compare: viewCompare, map: viewMap };
-const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', compare: 'Compare', map: 'Map' };
+const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, compare: viewCompare };
+const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', compare: 'Compare' };
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -739,8 +792,6 @@ function parseHash() {
 function disposeView() {
   clearTimeout(pollTimer);
   disposeCharts();
-  if (mapHandle) mapHandle.dispose();
-  mapHandle = null;
 }
 
 async function navigate() {

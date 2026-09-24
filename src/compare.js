@@ -1,6 +1,7 @@
 'use strict';
 
 const { tribeName } = require('./views');
+const geo = require('./geo');
 
 const DAY = 86400000;
 const CHART_NEIGHBOURS = 6; // the chart shows the player plus the nearest N ranks
@@ -61,10 +62,47 @@ function pickReference(series, days) {
 }
 
 /**
+ * Fills in the distance fields of `rows` (see geo.js for the definitions) from the village map kept by the
+ * ingestion. Never fails the comparison: without a usable map the distances simply stay null.
+ */
+async function addDistances(rows, mine, getMap, geoOptions) {
+  const none = { geometry: null, location: null };
+  if (!getMap || !mine) return none;
+  try {
+    const map = await getMap();
+    if (!map || !Array.isArray(map.pi) || !Array.isArray(map.u)) return none;
+    const g = geo.worldGeometry(map.bounds, geoOptions);
+    const villages = geo.villagesByPlayer(map, rows.map((r) => r.id));
+    const mineVillages = villages.get(mine.id) || [];
+    const myCentre = geo.centre(g, mineVillages);
+
+    for (const r of rows) {
+      const theirs = villages.get(r.id) || [];
+      const c = geo.centre(g, theirs);
+      r.centre = c ? { x: c.x, y: c.y } : null;
+      r.spread = c ? c.spread : null;
+      if (r.is_me) continue;
+      const closest = geo.closestApproach(g, mineVillages, theirs);
+      if (closest) {
+        r.distance = geo.round1(closest.distance);
+        r.closest = { you: closest.from, them: closest.to };
+      }
+      if (myCentre && c) r.centre_distance = geo.round1(geo.distance(g, myCentre.x, myCentre.y, c.x, c.y));
+    }
+    return {
+      geometry: { radius: g.radius, size: g.size, wrap: g.wrap, source: g.source },
+      location: { villages: mineVillages.length, centre: myCentre ? { x: myCentre.x, y: myCentre.y } : null, spread: myCentre ? myCentre.spread : null, main: geo.mainVillage(mineVillages) },
+    };
+  } catch {
+    return none;
+  }
+}
+
+/**
  * Players ranked around `name` and how much each of them grew over the last `days` days compared with that
  * player. Growth is measured between two stored daily snapshots (player_history), so it needs at least two.
  */
-async function buildCompare(store, world, { name, above = 10, below = 10, days = 7 }) {
+async function buildCompare(store, world, { name, above = 10, below = 10, days = 7, getMap = null, geoOptions = {} }) {
   const me = await resolvePlayer(store, world, name);
   const series = await store.getSnapshotSeries(world, 400);
   if (!series.length) throw new CompareError(503, 'No snapshot has been stored yet.');
@@ -102,6 +140,11 @@ async function buildCompare(store, world, { name, above = 10, below = 10, days =
       rank_change: t && t.rank != null ? t.rank - p.rank : null, // positive = moved up
       vs_me_pop: null,
       vs_me_pct: null,
+      distance: null, // closest approach to the player, in fields
+      closest: null, // {you:{x,y}, them:{x,y}}: the two villages that produce it
+      centre_distance: null, // distance between the two population-weighted centres, in fields
+      centre: null, // {x,y}
+      spread: null, // population-weighted average distance of the player's villages from their own centre
     };
   });
 
@@ -123,6 +166,8 @@ async function buildCompare(store, world, { name, above = 10, below = 10, days =
     median_gain_pct: median(others.map((r) => r.gain_pct)),
     my_growth_position: myPct == null ? null : 1 + others.filter((r) => r.gain_pct > myPct).length, // 1 = fastest
   };
+
+  const where = await addDistances(rows, mine, getMap, geoOptions);
 
   // Chart: the player plus the nearest ranks, one point per stored snapshot since the reference day.
   const startId = ref ? ref.id : latest.id;
@@ -146,6 +191,8 @@ async function buildCompare(store, world, { name, above = 10, below = 10, days =
         }
       : null,
     snapshots_stored: series.length,
+    geometry: where.geometry,
+    location: where.location,
     above: mine ? mine.rank - rows[0].rank : 0,
     below: mine ? rows[rows.length - 1].rank - mine.rank : 0,
     rows,

@@ -66,9 +66,7 @@ test('API endpoints return consistent data', async () => {
 
     const hist = (await getJson(t.base, '/api/history')).body;
     assert.equal(hist.snapshots.length, 4);
-    const map = (await getJson(t.base, '/api/map')).body;
-    assert.equal(map.count, map.x.length);
-    assert.ok(map.pn.length > 100);
+    assert.equal((await getJson(t.base, '/api/map')).res.status, 404); // the map view was removed
 
     const mv = (await getJson(t.base, '/api/movers?limit=5')).body;
     assert.ok(mv.gainers.length > 0);
@@ -91,17 +89,17 @@ test('security headers, health check, gzip and ETag revalidation', async () => {
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
 
     const raw = await new Promise((resolve, reject) => {
-      http.get(`${t.base}/api/map`, { headers: { 'accept-encoding': 'gzip' } }, (res) => {
+      http.get(`${t.base}/api/players?limit=100`, { headers: { 'accept-encoding': 'gzip' } }, (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => resolve({ res, body: Buffer.concat(chunks) }));
       }).on('error', reject);
     });
     assert.equal(raw.res.headers['content-encoding'], 'gzip');
-    assert.ok(JSON.parse(zlib.gunzipSync(raw.body).toString()).count > 100);
+    assert.ok(JSON.parse(zlib.gunzipSync(raw.body).toString()).rows.length > 50);
 
     const etag = raw.res.headers.etag;
-    const again = await fetch(`${t.base}/api/map`, { headers: { 'if-none-match': etag } });
+    const again = await fetch(`${t.base}/api/players?limit=100`, { headers: { 'if-none-match': etag } });
     assert.equal(again.status, 304);
   } finally {
     await t.close();
@@ -114,9 +112,10 @@ test('static frontend is served and path traversal is refused', async () => {
     const index = await fetch(`${t.base}/`);
     assert.equal(index.status, 200);
     assert.match(await index.text(), /Tra5x/);
-    for (const p of ['/js/app.js', '/js/charts.js', '/js/map.js', '/css/styles.css', '/favicon.svg']) {
+    for (const p of ['/js/app.js', '/js/charts.js', '/css/styles.css', '/favicon.svg']) {
       assert.equal((await fetch(t.base + p)).status, 200, p);
     }
+    assert.equal((await fetch(`${t.base}/js/map.js`)).status, 404);
     assert.equal((await fetch(`${t.base}/..%2fpackage.json`)).status, 404);
     assert.equal((await fetch(`${t.base}/%2e%2e/src/config.js`)).status, 404);
     assert.equal((await fetch(`${t.base}/missing.txt`)).status, 404);
@@ -166,7 +165,7 @@ test('empty database: overview says so instead of failing', async () => {
   try {
     const ov = (await getJson(base, '/api/overview')).body;
     assert.equal(ov.empty, true);
-    assert.equal((await getJson(base, '/api/map')).body.empty, true);
+    assert.equal((await getJson(base, '/api/compare?player=someone')).res.status, 404);
     assert.equal((await getJson(base, '/api/history')).body.snapshots.length, 0);
   } finally {
     await new Promise((r) => app.server.close(r));
