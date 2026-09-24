@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { parseMapSql } = require('../src/parser');
-const { aggregate } = require('../src/aggregate');
+const { aggregate, regionAllianceKey, REGION_ALLIANCE_SEP, REGION_ALLIANCE_CAP } = require('../src/aggregate');
 const { createWorld, toMapSql } = require('../scripts/fixture');
 
 function build(opts) {
@@ -81,4 +81,58 @@ test('the compact map (ver 3) carries a region index per village that reproduces
   const flat = build({ seed: 12, players: 40, alliances: 3, regions: false });
   assert.deepEqual(flat.agg.map.rn, []);
   assert.ok(flat.agg.map.rg.every((ri) => ri === -1));
+});
+
+test('region_alliance breakdown rows (which alliances hold a region) reproduce the live map, are capped per region, and only exist for tracked regions', () => {
+  const { agg } = build({ seed: 13, players: 220, alliances: 12, regions: true });
+  const { payload, map } = agg;
+  const regionRows = payload.breakdowns.filter((b) => b.kind === 'region');
+  const raRows = payload.breakdowns.filter((b) => b.kind === 'region_alliance');
+  assert.ok(raRows.length > 0);
+
+  // every region_alliance row's key decodes to a region that also has its own 'region' row, and the
+  // numeric alliance id in `lo` matches what's encoded in the key
+  const regionKeys = new Set(regionRows.map((r) => r.key));
+  for (const r of raRows) {
+    const sep = r.key.lastIndexOf(REGION_ALLIANCE_SEP);
+    assert.ok(sep > -1, r.key);
+    const region = r.key.slice(0, sep);
+    const allianceIdPart = r.key.slice(sep + 1);
+    assert.ok(regionKeys.has(region), region);
+    assert.equal(r.key, regionAllianceKey(region, r.lo));
+    if (allianceIdPart === 'none') assert.equal(r.lo, null);
+    else assert.equal(String(r.lo), allianceIdPart);
+  }
+
+  // capped per region
+  const perRegion = new Map();
+  for (const r of raRows) {
+    const region = r.key.slice(0, r.key.lastIndexOf(REGION_ALLIANCE_SEP));
+    perRegion.set(region, (perRegion.get(region) || 0) + 1);
+  }
+  for (const n of perRegion.values()) assert.ok(n <= REGION_ALLIANCE_CAP);
+
+  // re-derive each region's alliance breakdown straight off the compact map (same way regions.js does) and
+  // check it matches the stored rows exactly, since with only 12 alliances every region here is under the cap
+  const NATAR_TRIBE = 5;
+  const byRaKey = new Map();
+  for (let i = 0; i < map.count; i++) {
+    if (map.t[i] === NATAR_TRIBE || map.rg[i] === -1) continue;
+    const region = map.rn[map.rg[i]];
+    const a = map.a[i];
+    const allianceId = a >= 0 ? map.ai[a] : null;
+    const key = regionAllianceKey(region, allianceId);
+    const cur = byRaKey.get(key) || { villages: 0, population: 0 };
+    cur.villages++;
+    cur.population += map.p[i];
+    byRaKey.set(key, cur);
+  }
+  for (const r of raRows) {
+    assert.deepEqual(byRaKey.get(r.key), { villages: r.villages, population: r.population });
+  }
+  assert.equal(raRows.length, byRaKey.size);
+
+  // a world without regions produces no region_alliance rows either
+  const flat = build({ seed: 14, players: 40, alliances: 3, regions: false });
+  assert.equal(flat.agg.payload.breakdowns.filter((b) => b.kind === 'region_alliance').length, 0);
 });

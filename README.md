@@ -13,7 +13,7 @@ Macro statistics dashboard for the Travian world **rog.x5.international.travian.
 | Trends | Population, villages, players, alliances over time; player churn; population by tribe; top-5 alliances; population concentration (top 10 / top 100 share). Ranges 7 / 30 / 90 days / all. |
 | Activity | Change log between daily snapshots: villages founded / conquered / lost, new and departed players, alliance joins, leaves and switches, alliances founded and dissolved. Player and alliance dialogs show their own recent activity. |
 | Compare | Type a player name: every player with a village within 50 fields of that player's capital (25 / 50 / 75 / 100, or measured from all villages instead), **ranked among themselves by population** (#1 = the biggest of the people around you, not the world rank), with how much each grew over 1 day, 7 days, 30 days or since the first snapshot. Every row shows the difference in growth against that player ("vs you": ▲ grew faster, ▼ slower), village and rank change (places gained among these players), the distance in fields (closest villages, with coordinates), how many of their villages are in range, and the centre distance. Plus a chart of that player against nearby players of similar size and a summary (median growth, growth rank, your centre, nearest neighbour). Links like `#/compare?player=Name&days=7&radius=50` can be shared; a mistyped name shows "did you mean" suggestions. |
-| Regions | The "region" field from `map.sql` (Travian's own labelling of villages, not every world uses it): a KPI row (regions tracked, the biggest region, the fastest-growing one), a chart of the biggest regions' villages or population over the selected range (7 / 30 / 90 days / all, like Trends), and a sortable, live-searchable table of every tracked region with villages, population and the change since the previous snapshot. Up to the 500 busiest regions are kept in history. Click a region for a detail dialog: rank, totals, a population history chart, the change over the last 24 hours, 3 days and 7 days, and which alliances currently dominate the region with their village and population share (read live off the latest map, so it's always the current snapshot, not a history); alliance names there are clickable and open the same alliance dialog as everywhere else. |
+| Regions | The "region" field from `map.sql` (Travian's own labelling of villages, not every world uses it): a KPI row (regions tracked, the biggest region, the fastest-growing one), a chart of the biggest regions' villages or population over the selected range (7 / 30 / 90 days / all, like Trends), and a sortable, live-searchable table of every tracked region with villages, population and the change since the previous snapshot. Up to the 500 busiest regions are kept in history. Click a region for a detail dialog: rank, totals, a population history chart, the region's own change over the last 24 hours / 3 days / 7 days, and a table of which alliances currently dominate the region - village and population share, each with its own population change (%) over the same three windows, using the same reference days as the region's. Villages/population/shares are read live off the latest map; the 24h/3d/7d columns come from history that started accumulating once this feature shipped (no backfill), so they read "-" until enough daily snapshots have passed for a given alliance. Alliance names in that table are clickable and open the same alliance dialog as everywhere else. |
 
 Every chart has a "Table view" with the same numbers, and there is a light and a dark theme.
 
@@ -67,8 +67,10 @@ world reset, village events are skipped for that day and a warning is logged.
 
 `players` and `alliances` hold the current state, with the previous population for the 24 h deltas. `map_cache` holds the
 latest compact village list, used to detect village changes, to measure distances between players, and to read which
-alliances currently hold a region (Regions tab) - it is always the latest snapshot only, so region history comes from
-`snapshot_breakdowns` instead, while who-holds-it-now comes live from `map_cache`.
+alliances currently hold a region (Regions tab) - it is always the latest snapshot only, so who-holds-it-now comes live
+from `map_cache`, while history comes from `snapshot_breakdowns`: `kind = 'region'` for the region's own totals, and
+`kind = 'region_alliance'` for each alliance's villages/population within a region (top 30 alliances per tracked region,
+per day) - this is what powers the 24h/3d/7d % columns in the region dialog's alliance table.
 
 ### How nearby players and distances are measured (Compare tab)
 
@@ -158,7 +160,7 @@ Without Supabase credentials the server uses the in-memory store and says so in 
 `/api/events?kind=village|alliance|player|<kind,...>&player=&alliance=&snapshot=&limit=&offset=` -
 `/api/breakdowns?kind=region|ring|quadrant|pop_bucket|village_bucket&days=` -
 `/api/compare?player=<name or id>&radius=50&origin=main|all&days=7` (radius 1-200 fields; days=0: since the first snapshot; rows carry `rank`, `world_rank`, `distance`, `closest`, `villages_in_range`, `centre_distance`, `spread`) - `/api/movers` -
-`/api/regions?key=<region name>` (rank, totals, population history, growth over the last 1/3/7 days, and the current alliance breakdown of the region read live off the latest map - `alliances_available: false` if no map is cached yet) -
+`/api/regions?key=<region name>` (rank, totals, population history, growth over the last 1/3/7 days, and the current alliance breakdown of the region read live off the latest map, each with its own `growth.d1/d3/d7` population change - `alliances_available: false` if no map is cached yet) -
 `POST /api/admin/refresh` (bearer token).
 
 ## Troubleshooting

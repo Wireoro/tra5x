@@ -295,13 +295,13 @@ test('SupabaseStore: exact-name lookup escapes LIKE characters; history readers 
     await store.getPlayersAtSnapshot(12, [5, 6, 7]);
     assert.equal(seen.at(-1).path, '/rest/v1/player_history');
     assert.equal(seen.at(-1).params.snapshot_id, 'eq.12');
-    assert.equal(seen.at(-1).params.player_id, 'in.(5,6,7)');
+    assert.equal(seen.at(-1).params.player_id, 'in.("5","6","7")');
     assert.match(seen.at(-1).params.select, /rank/);
 
     await store.getPlayersByIds('w', [5, 6, 7]);
     assert.equal(seen.at(-1).path, '/rest/v1/players');
     assert.equal(seen.at(-1).params.world, 'eq.w');
-    assert.equal(seen.at(-1).params.id, 'in.(5,6,7)');
+    assert.equal(seen.at(-1).params.id, 'in.("5","6","7")');
     const ids = Array.from({ length: 320 }, (_, i) => i + 1);
     const n0 = seen.length;
     await store.getPlayersByIds('w', ids);
@@ -309,7 +309,7 @@ test('SupabaseStore: exact-name lookup escapes LIKE characters; history readers 
 
     await store.getPlayersHistory([5, 6], 9);
     assert.equal(seen.at(-1).params.snapshot_id, 'gte.9');
-    assert.equal(seen.at(-1).params.player_id, 'in.(5,6)');
+    assert.equal(seen.at(-1).params.player_id, 'in.("5","6")');
     assert.equal(seen.at(-1).params.order, 'snapshot_id.asc,player_id.asc');
 
     const before = seen.length;

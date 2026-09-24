@@ -33,7 +33,7 @@ test('select builds PostgREST filters, ordering, paging and reads the exact coun
     assert.equal(total, 1234);
     const r = f.seen[0];
     assert.equal(r.path, '/rest/v1/players');
-    assert.deepEqual(Object.fromEntries(r.params), { select: 'id,name', world: 'eq.w', id: 'in.(1,2,3)', name: 'ilike.*bob*', order: 'rank.asc.nullslast,id.asc', limit: '50', offset: '100' });
+    assert.deepEqual(Object.fromEntries(r.params), { select: 'id,name', world: 'eq.w', id: 'in.("1","2","3")', name: 'ilike.*bob*', order: 'rank.asc.nullslast,id.asc', limit: '50', offset: '100' });
     assert.equal(r.headers.prefer, 'count=exact');
     assert.equal(r.headers.apikey, 'sb_secret_abc');
     assert.equal(r.headers.authorization, undefined); // new-style secret keys are not JWTs

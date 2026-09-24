@@ -2,6 +2,7 @@
 
 const { NATAR_TRIBE } = require('./travian');
 const { CompareError, pickReference } = require('./compare');
+const { regionAllianceKey } = require('./aggregate');
 
 const DAY = 86400000;
 const GROWTH_HORIZONS = [1, 3, 7]; // days shown in the region dialog
@@ -54,11 +55,48 @@ function growthAt(series, latest, days) {
     requested_days: days,
     actual_days: Math.round(actualDays * 100) / 100,
     from: ref.taken_at,
+    ref_snapshot_id: ref.id,
     villages_gain: latest.villages - ref.villages,
     population_gain: latest.population - ref.population,
     population_gain_pct: ref.population > 0 ? (latest.population - ref.population) / ref.population : null,
     truncated: actualDays < days * 0.8,
   };
+}
+
+/**
+ * Fills in `growth.d1/d3/d7` on each of `alliances` (the region's live alliance breakdown - see
+ * regionAllianceBreakdown) using the SAME reference snapshots picked for the region's own growth
+ * (`regionGrowth`), so an alliance's 24h/3d/7d figures line up with the region's. Reads the
+ * region_alliance breakdown stored for exactly those snapshots (see aggregate.js buildBreakdowns) - this
+ * is new tracked history, so an alliance with no stored row at a reference point (new to the region, or
+ * simply not tracked yet because this feature only started recording from whenever it was deployed) gets
+ * `null` for that horizon rather than a misleading gain-from-zero.
+ */
+async function fillAllianceGrowth(store, region, alliances, regionGrowth) {
+  for (const a of alliances) a.growth = { d1: null, d3: null, d7: null };
+  if (!alliances.length) return;
+
+  const refSnapshotIds = [...new Set(GROWTH_HORIZONS.map((d) => regionGrowth[`d${d}`]?.ref_snapshot_id).filter((id) => id != null))];
+  if (!refSnapshotIds.length) return;
+
+  const wantedKeys = [...new Set(alliances.map((a) => regionAllianceKey(region, a.alliance_id)))];
+  const refRows = await store.getBreakdowns(refSnapshotIds, 'region_alliance', wantedKeys);
+  const bySnapshotAndKey = new Map(refRows.map((r) => [`${r.snapshot_id}:${r.key}`, r]));
+
+  for (const a of alliances) {
+    const key = regionAllianceKey(region, a.alliance_id);
+    for (const d of GROWTH_HORIZONS) {
+      const g = regionGrowth[`d${d}`];
+      const past = g?.ref_snapshot_id != null ? bySnapshotAndKey.get(`${g.ref_snapshot_id}:${key}`) : null;
+      if (!past) continue; // stays null: no stored row for this alliance at that reference point
+      const pastPop = Number(past.population);
+      a.growth[`d${d}`] = {
+        villages_gain: a.villages - past.villages,
+        population_gain: a.population - pastPop,
+        population_gain_pct: pastPop > 0 ? (a.population - pastPop) / pastPop : null,
+      };
+    }
+  }
 }
 
 /**
@@ -81,7 +119,7 @@ async function buildRegionDetail(store, world, key, { getMap = null } = {}) {
 
   const history = allRows
     .filter((r) => r.key === key)
-    .map((r) => ({ taken_at: takenAt.get(r.snapshot_id), villages: r.villages, population: Number(r.population) }))
+    .map((r) => ({ id: r.snapshot_id, taken_at: takenAt.get(r.snapshot_id), villages: r.villages, population: Number(r.population) }))
     .sort((a, b) => Date.parse(a.taken_at) - Date.parse(b.taken_at));
   const latest = history[history.length - 1];
 
@@ -94,6 +132,14 @@ async function buildRegionDetail(store, world, key, { getMap = null } = {}) {
       live = regionAllianceBreakdown(await getMap(), key);
     } catch {
       live = null;
+    }
+  }
+  if (live) {
+    try {
+      await fillAllianceGrowth(store, key, live.alliances, growth);
+    } catch {
+      // leave the alliances' growth at the default (all null, set at the top of fillAllianceGrowth) -
+      // the dominance table itself still works, it just can't show 24h/3d/7d change for this request.
     }
   }
 

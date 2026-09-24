@@ -280,7 +280,7 @@ test('SupabaseStore: events, breakdowns, storage stats and pruning talk to the r
     assert.deepEqual(ev.rows, [{ id: 9, snapshot_id: 3, kind: 'village_conquered', population: 90, taken_at: '2026-09-24T00:00:00Z' }]);
     const p = Object.fromEntries(f.seen[0].params);
     assert.equal(p.world, 'eq.w');
-    assert.equal(p.kind, 'in.(village_founded,village_conquered)');
+    assert.equal(p.kind, 'in.("village_founded","village_conquered")');
     assert.equal(p.or, '(player_id.eq.5,from_player_id.eq.5)');
     assert.equal(p.order, 'snapshot_id.desc,population.desc.nullslast,id.asc');
     assert.equal(p.limit, '10');
@@ -290,7 +290,7 @@ test('SupabaseStore: events, breakdowns, storage stats and pruning talk to the r
     await store.getBreakdowns([1, 2], 'ring');
     const b = f.seen.at(-1);
     assert.equal(b.path, '/rest/v1/snapshot_breakdowns');
-    assert.equal(Object.fromEntries(b.params).snapshot_id, 'in.(1,2)');
+    assert.equal(Object.fromEntries(b.params).snapshot_id, 'in.("1","2")');
     assert.equal(Object.fromEntries(b.params).kind, 'eq.ring');
     assert.deepEqual(await store.getBreakdowns([], 'ring'), []);
 

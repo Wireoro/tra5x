@@ -68,7 +68,10 @@ class PostgrestClient {
         params.push(['or', `(${val})`]);
         continue;
       }
-      const v = op === 'in' ? `(${val.join(',')})` : val;
+      // Each value is double-quoted (PostgREST's own escaping for an in.() list) so text values containing
+      // a comma, space or parenthesis - e.g. a region_alliance breakdown key - can't be misread as a
+      // separate element or a syntax error; harmless for plain numeric ids too.
+      const v = op === 'in' ? `(${val.map((x) => `"${String(x).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',')})` : val;
       params.push([col, `${op}.${v}`]);
     }
     if (q.order) params.push(['order', q.order]);

@@ -5,6 +5,15 @@ const { NATAR_TRIBE } = require('./travian');
 const POP_EDGES = [0, 100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, Infinity];
 const VILLAGE_EDGES = [1, 2, 3, 4, 6, 8, 11, 16, 26, Infinity];
 
+// A `region_alliance` breakdown row is keyed by region + alliance in one text column (the table has no
+// extra column to spare - see migration 4). Unit separator (never appears in a region name or an id) keeps
+// the two parts unambiguous to split back out; 'none' stands in for "no alliance" (allianceId is null there).
+const REGION_ALLIANCE_SEP = '\u001f';
+const REGION_ALLIANCE_CAP = 30; // top alliances by population kept per tracked region, per day
+function regionAllianceKey(region, allianceId) {
+  return `${region}${REGION_ALLIANCE_SEP}${allianceId ?? 'none'}`;
+}
+
 /** Counts values into [edge[i], edge[i+1]) buckets. `max` is inclusive (null = open-ended). */
 function bucketize(values, edges) {
   const out = [];
@@ -42,6 +51,7 @@ function aggregate(rows) {
   const natarPlayers = new Set();
   const alliances = new Map();
   const regions = new Map();
+  const regionAlliances = new Map(); // raw region + allianceId (pre-cap) -> {region, allianceId, villages, population}
 
   // ver 2 adds ids so consecutive maps can be diffed: v = village id per village, pi / ai = player / alliance
   // id for each entry of pn / at (the arrays u and a index into them). ver 3 adds rg / rn the same way for the
@@ -172,6 +182,15 @@ function aggregate(rows) {
       g.villages++;
       g.population += r.population;
       regions.set(r.region, g);
+
+      // same grouping, split further by alliance - lets the Regions dialog show, and later track the
+      // history of, which alliances hold a region (see regionAllianceKey / buildBreakdowns below).
+      const allianceId = r.allianceId > 0 ? r.allianceId : null;
+      const raKey = `${r.region}\u0000${allianceId ?? 'none'}`; // transient grouping key, never persisted
+      const ra = regionAlliances.get(raKey) || { region: r.region, allianceId, villages: 0, population: 0 };
+      ra.villages++;
+      ra.population += r.population;
+      regionAlliances.set(raKey, ra);
     }
   }
 
@@ -245,7 +264,7 @@ function aggregate(rows) {
       alliances: [...alliances.values()],
       players: playerList,
       meta,
-      breakdowns: buildBreakdowns(meta, regions),
+      breakdowns: buildBreakdowns(meta, regions, regionAlliances),
     },
     map,
   };
@@ -255,15 +274,19 @@ const bucketKey = (b) => (b.max == null ? `${b.min}+` : `${b.min}-${b.max}`);
 
 /**
  * Flat, queryable rows for the `snapshot_breakdowns` table (one per kind + bucket):
- * pop_bucket / village_bucket (`players` = players in the bucket), quadrant, ring and region
- * (`villages` / `population` of player villages).
+ * pop_bucket / village_bucket (`players` = players in the bucket), quadrant, ring, region
+ * (`villages` / `population` of player villages) and region_alliance (same, split further by alliance -
+ * `lo` carries the numeric alliance id, null for the "no alliance" bucket; `key` is region + alliance,
+ * see regionAllianceKey - only tracked for the same regions kept below, and capped to the top
+ * REGION_ALLIANCE_CAP alliances per region so this stays bounded).
  */
-function buildBreakdowns(meta, regions) {
+function buildBreakdowns(meta, regions, regionAlliances) {
   const out = [];
   for (const b of meta.pop_buckets) out.push({ kind: 'pop_bucket', key: bucketKey(b), lo: b.min, hi: b.max, players: b.count, villages: 0, population: 0 });
   for (const b of meta.village_buckets) out.push({ kind: 'village_bucket', key: bucketKey(b), lo: b.min, hi: b.max, players: b.count, villages: 0, population: 0 });
   for (const [key, q] of Object.entries(meta.quadrants)) out.push({ kind: 'quadrant', key, lo: null, hi: null, players: 0, villages: q.villages, population: q.population });
   for (const r of meta.rings.items) out.push({ kind: 'ring', key: `${r.from}-${r.to}`, lo: r.from, hi: r.to, players: 0, villages: r.villages, population: r.population });
+
   const seen = new Set();
   for (const g of [...regions.values()].sort((a, b) => b.villages - a.villages).slice(0, 500)) {
     const key = String(g.region).slice(0, 80);
@@ -271,7 +294,25 @@ function buildBreakdowns(meta, regions) {
     seen.add(key);
     out.push({ kind: 'region', key, lo: null, hi: null, players: 0, villages: g.villages, population: g.population });
   }
+
+  const byRegion = new Map(); // capped region key -> its alliance entries, for regions we're already tracking
+  for (const ra of (regionAlliances || new Map()).values()) {
+    const regionKey = String(ra.region).slice(0, 80);
+    if (!seen.has(regionKey)) continue;
+    let list = byRegion.get(regionKey);
+    if (!list) {
+      list = [];
+      byRegion.set(regionKey, list);
+    }
+    list.push(ra);
+  }
+  for (const [regionKey, list] of byRegion) {
+    list.sort((a, b) => b.population - a.population);
+    for (const ra of list.slice(0, REGION_ALLIANCE_CAP)) {
+      out.push({ kind: 'region_alliance', key: regionAllianceKey(regionKey, ra.allianceId), lo: ra.allianceId, hi: null, players: 0, villages: ra.villages, population: ra.population });
+    }
+  }
   return out;
 }
 
-module.exports = { aggregate, bucketize, POP_EDGES, VILLAGE_EDGES };
+module.exports = { aggregate, bucketize, POP_EDGES, VILLAGE_EDGES, regionAllianceKey, REGION_ALLIANCE_SEP, REGION_ALLIANCE_CAP };

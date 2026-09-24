@@ -239,9 +239,8 @@ async function openRegion(key) {
       chart.append(h('p', { class: 'muted' }, 'Regions are recorded once a day; the chart needs at least two daily snapshots.'));
     }
 
-    const growthLine = (label, g) => h('p', null, `${label}: `,
-      g ? [deltaNode(g.villages_gain, { suffix: ' villages' }), ', ', deltaNode(g.population_gain, { suffix: ' population' })] : h('span', { class: 'muted' }, 'not enough history yet'));
-    body.append(h('h3', null, 'Change over time'), growthLine('Last 24h', d.growth.d1), growthLine('Last 3 days', d.growth.d3), growthLine('Last 7 days', d.growth.d7));
+    body.append(h('h3', null, 'Region change over time'),
+      h('p', null, 'Last 24h: ', regionGrowthText(d.growth.d1), ' · Last 3 days: ', regionGrowthText(d.growth.d3), ' · Last 7 days: ', regionGrowthText(d.growth.d7)));
 
     body.append(h('h3', null, 'Alliances that dominate this region'));
     if (!d.alliances_available) {
@@ -249,6 +248,11 @@ async function openRegion(key) {
     } else if (!d.alliances.length) {
       body.append(h('p', { class: 'empty' }, 'No occupied villages found here right now.'));
     } else {
+      const allianceGrowthCell = (a, horizon) => {
+        const g = a.growth && a.growth[horizon];
+        if (!g || g.population_gain_pct === null || g.population_gain_pct === undefined) return h('span', { class: 'muted' }, '-');
+        return h('span', { class: g.population_gain_pct > 0 ? 'up' : g.population_gain_pct < 0 ? 'down' : 'muted' }, pctSigned(g.population_gain_pct));
+      };
       body.append(dataTable({
         columns: [
           { label: 'Alliance', cell: (a) => (a.alliance_id ? nameButton(`[${a.alliance_tag || a.alliance_id}]`, () => { body.closest('dialog').close(); openAlliance(a.alliance_id); }) : h('span', { class: 'muted' }, 'No alliance')) },
@@ -256,11 +260,19 @@ async function openRegion(key) {
           { label: 'Share', r: true, cell: (a) => fmt.pct(a.village_share, 0) },
           { label: 'Population', r: true, cell: (a) => fmt.int(a.population) },
           { label: 'Share', r: true, cell: (a) => fmt.pct(a.population_share, 0) },
+          { label: 'Last 24h', r: true, hint: 'Population change since the reference snapshot for the region’s 24h figure', cell: (a) => allianceGrowthCell(a, 'd1') },
+          { label: 'Last 3 days', r: true, hint: 'Population change since the reference snapshot for the region’s 3-day figure', cell: (a) => allianceGrowthCell(a, 'd3') },
+          { label: 'Last 7 days', r: true, hint: 'Population change since the reference snapshot for the region’s 7-day figure', cell: (a) => allianceGrowthCell(a, 'd7') },
         ],
         rows: d.alliances,
-      }), h('p', { class: 'muted' }, "Live as of this region's latest snapshot; Natar villages are not counted."));
+      }), h('p', { class: 'muted' }, "Villages/population are live as of this region's latest snapshot; Natar villages are not counted. The 24h/3d/7d columns need history that only starts accumulating once this feature is running, so they read ‘-’ until enough daily snapshots have passed for an alliance."));
     }
   });
+}
+
+function regionGrowthText(g) {
+  if (!g) return h('span', { class: 'muted' }, 'not enough history yet');
+  return h('span', null, deltaNode(g.villages_gain, { suffix: ' villages' }), ', ', deltaNode(g.population_gain, { suffix: ' population' }));
 }
 
 // ------------------------------------------------------------------ status / chrome

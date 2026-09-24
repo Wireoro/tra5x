@@ -215,13 +215,16 @@ class SupabaseStore {
     return { rows: rows.map(({ snapshots, snapshot_id, ...e }) => ({ ...e, snapshot_id, taken_at: snapshots?.taken_at ?? null })), total };
   }
 
-  /** Per-day breakdown rows (kind = pop_bucket | village_bucket | quadrant | ring | region) for the given snapshots. */
-  async getBreakdowns(snapshotIds, kind) {
+  /**
+   * Per-day breakdown rows (kind = pop_bucket | village_bucket | quadrant | ring | region | region_alliance)
+   * for the given snapshots. `keys`, when given, narrows to exact `key` matches - used to pull just a
+   * handful of region_alliance rows (one region's alliances) instead of every region's.
+   */
+  async getBreakdowns(snapshotIds, kind, keys) {
     if (!snapshotIds.length) return [];
-    return this.db.selectAll('snapshot_breakdowns', {
-      filters: [['snapshot_id', 'in', snapshotIds], ['kind', 'eq', kind]],
-      order: 'snapshot_id.asc,key.asc',
-    });
+    const filters = [['snapshot_id', 'in', snapshotIds], ['kind', 'eq', kind]];
+    if (keys && keys.length) filters.push(['key', 'in', keys]);
+    return this.db.selectAll('snapshot_breakdowns', { filters, order: 'snapshot_id.asc,key.asc' });
   }
 
   /** Database size and per-table footprint (see the storage_stats() SQL function). */

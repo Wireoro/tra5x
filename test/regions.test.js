@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { Ingestor } = require('../src/ingest');
 const { MemoryStore } = require('../src/store/memory');
 const { buildRegionDetail, regionAllianceBreakdown } = require('../src/regions');
+const { regionAllianceKey } = require('../src/aggregate');
 const { CompareError } = require('../src/compare');
 const { createApp } = require('../src/server');
 const { createWorld, advance, toMapSql, silent, testConfig, fakeFetcher } = require('../scripts/test-helpers');
@@ -127,7 +128,41 @@ test('buildRegionDetail: totals, growth over 1/3/7 days and the live alliance br
   for (let i = 1; i < d.alliances.length; i++) assert.ok(d.alliances[i - 1].population >= d.alliances[i].population);
 });
 
-test('buildRegionDetail: with a single snapshot growth is null everywhere; without a usable map the alliance table is unavailable', async () => {
+test('buildRegionDetail: each alliance in the dominance table gets its own 24h/3d/7d population change, using the same reference snapshots as the region’s own growth', async () => {
+  const { config, store } = await ingestDays(7);
+  const series = await store.getSnapshotSeries(config.world, 400);
+  const b = (kind) => store.breakdowns.filter((r) => r.snapshot_id === series[series.length - 1].id && r.kind === kind);
+  const key = b('region').sort((x, y) => y.villages - x.villages)[0].key;
+
+  const d = await buildRegionDetail(store, config.world, key, { getMap: async () => (await store.getMap(config.world)).payload });
+  assert.ok(d.alliances.length > 1);
+  assert.ok(d.alliances.some((a) => a.alliance_id != null)); // at least one real alliance, not just "no alliance"
+
+  for (const [field, daysBack] of [['d1', 1], ['d3', 3], ['d7', 7]]) {
+    const refSnapshotId = d.growth[field].ref_snapshot_id;
+    assert.equal(refSnapshotId, series[series.length - 1 - daysBack].id); // same reference point as the region-level growth
+
+    for (const a of d.alliances) {
+      const past = store.breakdowns.find((r) => r.snapshot_id === refSnapshotId && r.kind === 'region_alliance' && r.key === regionAllianceKey(key, a.alliance_id));
+      const g = a.growth[field];
+      if (!past) {
+        assert.equal(g, null, `${a.alliance_tag || 'no alliance'} ${field}`);
+        continue;
+      }
+      assert.ok(g, `${a.alliance_tag || 'no alliance'} ${field}`);
+      assert.equal(g.villages_gain, a.villages - past.villages);
+      assert.equal(g.population_gain, a.population - Number(past.population));
+      const expectedPct = Number(past.population) > 0 ? (a.population - Number(past.population)) / Number(past.population) : null;
+      assert.equal(g.population_gain_pct, expectedPct);
+    }
+  }
+
+  // a region_alliance row really was recorded for the alliance holding the most population in this region
+  const topAlliance = d.alliances[0];
+  assert.ok(store.breakdowns.some((r) => r.kind === 'region_alliance' && r.key === regionAllianceKey(key, topAlliance.alliance_id)));
+});
+
+test('buildRegionDetail: with a single snapshot growth is null everywhere (region and per-alliance alike); without a usable map the alliance table is unavailable', async () => {
   const { config, store } = await ingestDays(0);
   const series = await store.getSnapshotSeries(config.world, 1);
   const key = store.breakdowns.find((r) => r.snapshot_id === series[0].id && r.kind === 'region').key;
@@ -137,8 +172,14 @@ test('buildRegionDetail: with a single snapshot growth is null everywhere; witho
   assert.equal(alone.alliances_available, false);
   assert.deepEqual(alone.alliances, []);
 
-  for (const getMap of [async () => null, async () => ({ ver: 1 }), async () => { throw new Error('db down'); }]) {
-    const r = await buildRegionDetail(store, config.world, key, { getMap });
+  const getMap = async () => (await store.getMap(config.world)).payload;
+  const withMap = await buildRegionDetail(store, config.world, key, { getMap });
+  assert.equal(withMap.alliances_available, true);
+  assert.ok(withMap.alliances.length > 0);
+  for (const a of withMap.alliances) assert.deepEqual(a.growth, { d1: null, d3: null, d7: null }); // one snapshot: no reference point to compare against
+
+  for (const badMap of [async () => null, async () => ({ ver: 1 }), async () => { throw new Error('db down'); }]) {
+    const r = await buildRegionDetail(store, config.world, key, { getMap: badMap });
     assert.equal(r.alliances_available, false);
     assert.deepEqual(r.alliances, []);
     assert.ok(r.totals.villages > 0); // the region totals do not depend on the map at all
@@ -178,6 +219,7 @@ test('GET /api/regions validates input and returns the region detail', async () 
     assert.equal(ok.body.region, key);
     assert.equal(ok.body.alliances_available, true);
     assert.ok(ok.body.alliances.every((a) => typeof a.villages === 'number' && typeof a.population_share === 'number'));
+    assert.ok(ok.body.alliances.every((a) => a.growth && ['d1', 'd3', 'd7'].every((h) => h in a.growth)));
   } finally {
     await new Promise((r) => app.server.close(r));
   }

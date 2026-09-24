@@ -357,10 +357,12 @@ class MemoryStore {
     return { rows: rows.slice(from, from + (o.limit ?? 50)).map(({ world: _w, ...rest }) => rest), total };
   }
 
-  async getBreakdowns(snapshotIds, kind) {
+  /** `keys`, when given, narrows to exact `key` matches (e.g. a handful of region_alliance rows). */
+  async getBreakdowns(snapshotIds, kind, keys) {
     const set = new Set(snapshotIds);
+    const keySet = keys ? new Set(keys) : null;
     return this.breakdowns
-      .filter((b) => set.has(b.snapshot_id) && b.kind === kind)
+      .filter((b) => set.has(b.snapshot_id) && b.kind === kind && (!keySet || keySet.has(b.key)))
       .sort((a, b) => a.snapshot_id - b.snapshot_id || String(a.key).localeCompare(String(b.key)));
   }
 
