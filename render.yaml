@@ -1,0 +1,22 @@
+# Render Blueprint for Tra5x. Push this repo to GitHub, then Render > New > Blueprint.
+services:
+  - type: web
+    name: tra5x
+    runtime: node
+    region: frankfurt # closest Render region to the Supabase project (Paris, eu-west-3)
+    plan: free # free web services sleep after ~15 min idle; use "starter" for an always-on instance
+    buildCommand: npm install --omit=dev # the app has no npm dependencies, so this is instant
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: TRAVIAN_SERVER
+        value: rog.x5.international.travian.com
+      - key: SUPABASE_URL
+        value: https://fqvdwbrnfbmtvdghkvzr.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false # paste it in the Render dashboard (Supabase > Project Settings > API Keys); never commit it
+      - key: ADMIN_TOKEN
+        generateValue: true # protects POST /api/admin/refresh

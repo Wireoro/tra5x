@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tra5x - Travian macro stats</title>
+    <meta name="description" content="Macro statistics for the rog.x5.international Travian world: players, alliances, tribes, growth and an interactive map, built from the public map.sql export." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/styles.css" />
+    <script src="/js/theme.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span>Tra5x</span>
+        <span class="world" id="world"></span>
+      </div>
+      <nav class="tabs" id="nav" aria-label="Sections">
+        <a href="#/overview" data-route="overview">Overview</a>
+        <a href="#/players" data-route="players">Players</a>
+        <a href="#/alliances" data-route="alliances">Alliances</a>
+        <a href="#/trends" data-route="trends">Trends</a>
+        <a href="#/map" data-route="map">Map</a>
+      </nav>
+      <div class="topmeta">
+        <span id="freshness" aria-live="polite"></span>
+        <button class="icon-btn" id="theme" type="button" aria-label="Switch colour theme">Theme</button>
+      </div>
+    </header>
+    <div class="banner" id="banner" hidden></div>
+    <main id="view" tabindex="-1"><p class="empty">Loading...</p></main>
+    <footer>
+      Data: Travian's public <code>map.sql</code> export (refreshed once a day at server midnight). Not affiliated with Travian Games. Tra5x is an independent community tool.
+    </footer>
+    <div class="tt" id="tt" role="tooltip" hidden></div>
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>
