@@ -282,6 +282,12 @@ footer {
   align-items: center;
   gap: 8px 12px;
 }
+.filters .field {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .filters label {
   display: grid;
   gap: 2px;
@@ -411,6 +417,10 @@ th button:hover {
 th.r,
 td.r {
   text-align: right;
+}
+tbody tr.me td {
+  background: var(--wash);
+  font-weight: 650;
 }
 tbody tr.click {
   cursor: pointer;

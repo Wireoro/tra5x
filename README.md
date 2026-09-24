@@ -12,6 +12,7 @@ Macro statistics dashboard for the Travian world **rog.x5.international.travian.
 | Alliances | Sortable table; detail dialog with member list and population history. |
 | Trends | Population, villages, players, alliances over time; player churn; population by tribe; top-5 alliances; population concentration (top 10 / top 100 share). Ranges 7 / 30 / 90 days / all. |
 | Activity | Change log between daily snapshots: villages founded / conquered / lost, new and departed players, alliance joins, leaves and switches, alliances founded and dissolved. Player and alliance dialogs show their own recent activity. |
+| Compare | Type a player name: the players ranked just above and below (5 to 25 each way) with population, villages and rank, and how much each grew over 1 day, 7 days, 30 days or since the first snapshot. Every row shows the difference in growth against that player ("vs you": ▲ grew faster, ▼ slower), the village and rank change, plus a chart of that player against the nearest ranks and a summary (median growth around you, your growth rank). Links like `#/compare?player=Name&days=7` can be shared; a mistyped name shows "did you mean" suggestions. |
 | Map | Canvas map with density heat-map, tribe view, alliance highlight, player search, pan / zoom, hover details. |
 
 Every chart has a "Table view" with the same numbers, and there is a light and a dark theme.
@@ -110,7 +111,7 @@ service fits within Render's 750 free hours a month). As a second safety net, a 
 ## Run locally
 
 ```bash
-npm test                 # 35 tests: parser, aggregation, ingestion rules, change log, API, security, rate limit, Supabase client
+npm test                 # 43 tests: parser, aggregation, ingestion rules, change log, API, security, rate limit, Supabase client
 npm run demo             # dashboard on http://127.0.0.1:3000 with SYNTHETIC data (21 fake days), in-memory store
 node --env-file=.env src/server.js   # real run: needs SUPABASE_SERVICE_ROLE_KEY in .env
 npm run ingest           # one-shot download + store (cron / GitHub Actions friendly), add -- --force to override checks
@@ -123,7 +124,8 @@ Without Supabase credentials the server uses the in-memory store and says so in 
 `/healthz` (plain text) - `/api/status` - `/api/overview` - `/api/history?days=30` - `/api/players?q=&tribe=&tag=&alliance=&sort=&dir=&limit=&offset=` -
 `/api/players/:id` (with history and recent events) - `/api/alliances?q=&sort=&dir=&limit=&offset=` - `/api/alliances/:id` -
 `/api/events?kind=village|alliance|player|<kind,...>&player=&alliance=&snapshot=&limit=&offset=` -
-`/api/breakdowns?kind=region|ring|quadrant|pop_bucket|village_bucket&days=` - `/api/movers` - `/api/map` -
+`/api/breakdowns?kind=region|ring|quadrant|pop_bucket|village_bucket&days=` -
+`/api/compare?player=<name or id>&above=10&below=10&days=7` (days=0: since the first snapshot) - `/api/movers` - `/api/map` -
 `POST /api/admin/refresh` (bearer token).
 
 ## Troubleshooting

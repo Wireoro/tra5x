@@ -254,6 +254,10 @@ class MemoryStore {
 
   async listPlayers(world, o = {}) {
     let rows = [...this.players.values()].filter((p) => p.world === world);
+    if (o.exactName) {
+      const n = o.exactName.toLowerCase();
+      rows = rows.filter((p) => p.name.toLowerCase() === n);
+    }
     if (o.q) {
       const q = o.q.toLowerCase();
       rows = rows.filter((p) => p.name.toLowerCase().includes(q));
@@ -279,6 +283,21 @@ class MemoryStore {
       .sort((a, b) => a.snapshot_id - b.snapshot_id)
       .slice(-limit)
       .map(({ taken_at, population, villages, alliance_id, rank }) => ({ taken_at, population, villages, alliance_id, rank }));
+  }
+
+  async getPlayersAtSnapshot(snapshotId, playerIds) {
+    const ids = new Set(playerIds);
+    return this.playerHistory
+      .filter((r) => r.snapshot_id === snapshotId && ids.has(r.player_id))
+      .map(({ player_id, population, villages, rank, alliance_id }) => ({ player_id, population, villages, rank, alliance_id }));
+  }
+
+  async getPlayersHistory(playerIds, fromSnapshotId) {
+    const ids = new Set(playerIds);
+    return this.playerHistory
+      .filter((r) => ids.has(r.player_id) && r.snapshot_id >= fromSnapshotId)
+      .sort((a, b) => a.snapshot_id - b.snapshot_id || a.player_id - b.player_id)
+      .map(({ player_id, snapshot_id, population, villages, rank }) => ({ player_id, snapshot_id, population, villages, rank }));
   }
 
   async listAlliances(world, o = {}) {

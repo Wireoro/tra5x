@@ -1,4 +1,4 @@
-import { h, $, clear, fmt, PLAYER_TRIBES, tribeName, tribeColor, seriesColor, debounce, hideTooltip } from './util.js';
+import { h, $, clear, fmt, PLAYER_TRIBES, tribeName, tribeColor, seriesColor, cssVar, debounce, hideTooltip } from './util.js';
 import { api } from './api.js';
 import { lineChart, barChart, disposeCharts, tableView } from './charts.js';
 import { mountMap } from './map.js';
@@ -29,7 +29,7 @@ function tribeCell(id) {
  * columns: [{label, r?:bool, cell:(row)=>Node|string, sort?:string}]
  * sort: {key, dir}; onSort(key)
  */
-function dataTable({ columns, rows, sort, onSort, empty = 'Nothing to show.' }) {
+function dataTable({ columns, rows, sort, onSort, empty = 'Nothing to show.', rowClass }) {
   if (!rows.length) return h('p', { class: 'empty' }, empty);
   const head = columns.map((c) => {
     const active = sort && c.sort && sort.key === c.sort;
@@ -40,7 +40,7 @@ function dataTable({ columns, rows, sort, onSort, empty = 'Nothing to show.' }) 
   });
   return h('div', { class: 'tablewrap' },
     h('table', null, h('thead', null, h('tr', null, head)),
-      h('tbody', null, rows.map((row) => h('tr', null, columns.map((c) => h('td', { class: c.r ? 'r num' : '' }, c.cell(row))))))));
+      h('tbody', null, rows.map((row) => h('tr', { class: rowClass ? rowClass(row) : '' }, columns.map((c) => h('td', { class: c.r ? 'r num' : '' }, c.cell(row))))))));
 }
 
 const nameButton = (text, onClick) => h('button', { class: 'rowbtn', type: 'button', onclick: onClick }, text);
@@ -186,7 +186,9 @@ async function openPlayer(id) {
         openAlliance(p.alliance_id);
       })));
     }
-    body.append(h('p', { style: null }, h('a', { href: `#/map?player=${encodeURIComponent(p.name)}`, onclick: () => body.closest('dialog').close() }, 'Show this player on the map')));
+    body.append(h('p', null,
+      h('a', { href: `#/map?player=${encodeURIComponent(p.name)}`, onclick: () => body.closest('dialog').close() }, 'Show this player on the map'), ' · ',
+      h('a', { href: `#/compare?player=${encodeURIComponent(p.name)}`, onclick: () => body.closest('dialog').close() }, 'Compare with the players around')));
     const chart = h('div');
     body.append(h('h3', null, 'Population over time'), chart);
     if (history.length >= 2) {
@@ -528,6 +530,176 @@ async function viewActivity(root, params, alive) {
   await load();
 }
 
+// ------------------------------------------------------------------ compare
+const COMPARE_PERIODS = [[1, '1 day'], [7, '7 days'], [30, '30 days'], [0, 'Since start']];
+const COMPARE_SIZES = [5, 10, 15, 25];
+const pctSigned = (r) => (r === null || r === undefined ? '-' : `${r > 0 ? '+' : r < 0 ? '-' : ''}${(Math.abs(r) * 100).toFixed(1)}%`);
+const ptsSigned = (r) => (r === null || r === undefined ? '-' : `${r > 0 ? '▲ +' : r < 0 ? '▼ -' : ''}${(Math.abs(r) * 100).toFixed(1)} pts`);
+
+/** Sorts rows on a numeric or text key; missing values always go last. */
+function sortLocal(rows, { key, dir }) {
+  const sign = dir === 'desc' ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const x = a[key];
+    const y = b[key];
+    if (x == null && y == null) return a.rank - b.rank;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sign || a.rank - b.rank;
+  });
+}
+
+async function viewCompare(root, params, alive) {
+  let name = params.get('player') || '';
+  if (!name) {
+    try { name = localStorage.getItem('tra5x-me') || ''; } catch { /* storage unavailable */ }
+  }
+  const st = {
+    days: params.has('days') ? Number(params.get('days')) : 7,
+    above: COMPARE_SIZES.includes(Number(params.get('above'))) ? Number(params.get('above')) : 10,
+    below: COMPARE_SIZES.includes(Number(params.get('below'))) ? Number(params.get('below')) : 10,
+    sort: { key: 'rank', dir: 'asc' },
+    metric: 'gain',
+  };
+  if (!COMPARE_PERIODS.some(([d]) => d === st.days)) st.days = 7;
+
+  const out = h('div', { class: 'stack' });
+  const periodHost = h('div');
+  const nameIn = h('input', { type: 'search', id: 'cname', placeholder: 'your player name', value: name, autocomplete: 'off', 'aria-label': 'Player name' });
+  const sizeSel = (id, label, key) => h('label', null, label,
+    h('select', { id, onchange: (e) => { st[key] = Number(e.target.value); load(); } }, COMPARE_SIZES.map((n) => h('option', { value: n, selected: n === st[key] }, String(n)))));
+  const form = h('form', { class: 'filters', onsubmit: (e) => { e.preventDefault(); name = nameIn.value.trim(); load(); } },
+    h('label', null, 'Player', nameIn), h('div', { class: 'field' }, h('span', null, 'Growth period'), periodHost),
+    sizeSel('cabove', 'Ranks above', 'above'), sizeSel('cbelow', 'Ranks below', 'below'),
+    h('button', { class: 'btn', type: 'submit' }, 'Compare'));
+  clear(root).append(h('div', { class: 'stack' }, form, out));
+
+  const syncHash = () => {
+    const q = new URLSearchParams();
+    if (name) q.set('player', name);
+    q.set('days', String(st.days));
+    q.set('above', String(st.above));
+    q.set('below', String(st.below));
+    history.replaceState(null, '', `#/compare?${q}`);
+  };
+
+  function drawPeriods() {
+    clear(periodHost).append(segmented(COMPARE_PERIODS, st.days, (d) => { st.days = d; load(); }, 'Growth period'));
+  }
+
+  function drawResult(d) {
+    const me = d.me;
+    const sum = d.summary;
+    const p = d.period;
+    clear(out);
+    if (!p) {
+      out.append(card('Growth needs two snapshots', null, h('p', null, `Only ${d.snapshots_stored} daily snapshot is stored so far. The ranking below is current; growth appears after the next daily map.sql refresh (server midnight).`)));
+    }
+
+    const days = p ? p.actual_days : null;
+    const periodText = !p ? '' : st.days === 0 ? `since the first snapshot (${fmt.dec(days)} days)` : `over ${fmt.dec(days)} days`;
+    const kpi = (label, value, note) => h('div', { class: 'kpi' }, h('div', { class: 'label' }, label), h('div', { class: 'value num' }, value), note ? h('div', { class: 'delta' }, note) : null);
+    out.append(h('div', { class: 'kpis' },
+      kpi('Your rank', `#${fmt.int(me.rank)}`, `${fmt.int(me.population)} population, ${fmt.int(me.villages)} villages`),
+      kpi('Your growth', me.gain === null ? '-' : fmt.signed(me.gain), me.gain_pct === null ? 'needs two snapshots' : `${pctSigned(me.gain_pct)} ${periodText}`),
+      kpi('Median around you', sum.median_gain_pct === null ? '-' : pctSigned(sum.median_gain_pct), sum.median_gain === null ? '' : `${fmt.signed(Math.round(sum.median_gain))} population, ${sum.compared} players`),
+      kpi('Your growth rank', sum.my_growth_position === null ? '-' : `${sum.my_growth_position} of ${sum.compared + 1}`, sum.faster === null ? '' : `${sum.faster} grew faster, ${sum.slower} slower`),
+      kpi('Villages', fmt.int(me.villages), me.village_gain === null ? '' : `${fmt.signed(me.village_gain)} ${periodText}`)));
+    if (p && p.truncated) {
+      out.append(h('p', { class: 'muted' }, `Only ${fmt.dec(p.actual_days)} days of history are stored, so growth covers that instead of the ${st.days} days you asked for.`));
+    }
+
+    // chart: me against the nearest ranks
+    const chartHost = h('div');
+    const times = d.series.times.map((t) => Date.parse(t));
+    const drawChart = () => {
+      const series = d.series.players.map((pl, i) => {
+        const pts = [];
+        let base = null;
+        pl.points.forEach((v, k) => {
+          if (v === null) return;
+          if (base === null) base = v;
+          pts.push({ t: times[k], v: st.metric === 'gain' ? v - base : v });
+        });
+        return { label: pl.is_me ? `${pl.name} (you)` : pl.name, color: pl.is_me ? cssVar('--ink') : seriesColor(Math.min(8, i + 1)), points: pts };
+      });
+      lineChart(chartHost, { series, height: 260, zeroBase: st.metric === 'gain', ariaLabel: st.metric === 'gain' ? 'Population gained since the start of the period, you against nearby players' : 'Population over time, you against nearby players' });
+    };
+    const metricHost = h('div', { class: 'filters' });
+    const drawMetric = () => clear(metricHost).append(segmented([['gain', 'Gained since start'], ['population', 'Population']], st.metric, (m) => { st.metric = m; drawMetric(); drawChart(); }, 'Chart metric'));
+    if (times.length >= 2) {
+      drawMetric();
+      drawChart();
+      out.append(card('You against the nearest ranks', 'the closest players above and below you', metricHost, chartHost));
+    }
+
+    // table
+    const tableHost = h('div');
+    const columns = [
+      { label: '#', r: true, sort: 'rank', cell: (r) => fmt.int(r.rank) },
+      { label: 'Player', sort: 'name', cell: (r) => h('span', null, nameButton(r.name, () => openPlayer(r.id)), r.is_me ? ' (you)' : '') },
+      { label: 'Tribe', cell: (r) => tribeCell(r.tribe) },
+      { label: 'Alliance', cell: (r) => (r.alliance_id ? nameButton(`[${r.alliance_tag || r.alliance_id}]`, () => openAlliance(r.alliance_id)) : h('span', { class: 'muted' }, '-')) },
+      { label: 'Population', r: true, sort: 'population', cell: (r) => fmt.int(r.population) },
+      { label: 'Growth', r: true, sort: 'gain', cell: (r) => deltaNode(r.gain) },
+      { label: 'Growth %', r: true, sort: 'gain_pct', cell: (r) => (r.gain_pct === null ? h('span', { class: 'muted' }, p ? 'new' : '-') : h('span', { class: r.gain_pct > 0 ? 'up' : r.gain_pct < 0 ? 'down' : 'muted' }, pctSigned(r.gain_pct))) },
+      { label: 'vs you', r: true, sort: 'vs_me_pct', cell: (r) => (r.is_me ? h('span', { class: 'muted' }, 'you') : h('span', { title: 'Difference in growth %, in percentage points. ▲ = grew faster than you, ▼ = slower.' }, ptsSigned(r.vs_me_pct))) },
+      { label: 'Villages', r: true, sort: 'villages', cell: (r) => fmt.int(r.villages) },
+      { label: 'Village change', r: true, sort: 'village_gain', cell: (r) => deltaNode(r.village_gain) },
+      { label: 'Rank change', r: true, sort: 'rank_change', cell: (r) => deltaNode(r.rank_change) },
+    ];
+    const drawTable = () => {
+      clear(tableHost).append(dataTable({
+        columns,
+        rows: sortLocal(d.rows, st.sort),
+        sort: st.sort,
+        rowClass: (r) => (r.is_me ? 'me' : ''),
+        onSort: (key) => {
+          if (st.sort.key === key) st.sort = { key, dir: st.sort.dir === 'asc' ? 'desc' : 'asc' };
+          else st.sort = { key, dir: key === 'name' || key === 'rank' ? 'asc' : 'desc' };
+          drawTable();
+        },
+      }));
+    };
+    drawTable();
+    out.append(card('Players around you', `${d.above} above, ${d.below} below${p ? `, growth ${periodText}` : ''}. "vs you" compares growth %: ▲ grew faster than you, ▼ slower. Rank change: ▲ moved up.`, tableHost));
+  }
+
+  function drawNotFound(err) {
+    const sugg = (err.body && err.body.suggestions) || [];
+    clear(out).append(card('Player not found', null,
+      h('p', null, err.message),
+      sugg.length
+        ? h('p', null, 'Did you mean: ', sugg.map((x, i) => [i ? ', ' : '', nameButton(`${x.name}${x.alliance_tag ? ` [${x.alliance_tag}]` : ''}`, () => { nameIn.value = x.name; name = x.name; load(); })]))
+        : h('p', { class: 'muted' }, 'The name must match exactly (upper and lower case are ignored). Use the Players tab to search for part of a name.')));
+  }
+
+  async function load() {
+    drawPeriods();
+    syncHash();
+    if (!name) {
+      clear(out).append(card('Compare with the players around you', null,
+        h('p', null, 'Enter your player name to see the players ranked just above and below you and how much each of them has grown compared with you.'),
+        h('p', { class: 'muted' }, 'Growth is measured between the daily snapshots Tra5x has stored, so the longer periods fill in as history builds up.')));
+      return;
+    }
+    out.classList.add('loading');
+    try {
+      const data = await api('compare', { player: name, days: st.days, above: st.above, below: st.below });
+      if (!alive()) return;
+      try { localStorage.setItem('tra5x-me', data.me.name); } catch { /* storage unavailable */ }
+      drawResult(data);
+    } catch (err) {
+      if (!alive()) return;
+      if (err.status === 404) drawNotFound(err);
+      else clear(out).append(h('p', { class: 'empty' }, `Could not load the comparison: ${err.message}`));
+    } finally {
+      out.classList.remove('loading');
+    }
+  }
+  await load();
+}
+
 async function viewMap(root, params, alive) {
   const holder = h('div');
   clear(root).append(h('div', { class: 'stack' }, card('Map', 'drag to pan, scroll or pinch to zoom, hover a village for details', holder)));
@@ -555,8 +727,8 @@ function renderEmpty(root) {
 }
 
 // ------------------------------------------------------------------ router
-const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, map: viewMap };
-const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', map: 'Map' };
+const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, compare: viewCompare, map: viewMap };
+const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', compare: 'Compare', map: 'Map' };
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');

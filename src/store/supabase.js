@@ -14,6 +14,9 @@ const EVENT_COLS =
 const PLAYER_SORTS = new Set(['rank', 'population', 'villages', 'pop_delta', 'name']);
 const ALLIANCE_SORTS = new Set(['rank', 'population', 'members', 'villages', 'pop_delta', 'tag']);
 
+/** Case-insensitive EXACT match pattern for ilike: no wildcards, `_` escaped, PostgREST syntax characters removed. */
+const exactSafe = (s) => String(s).replace(/[%,()\\*]/g, ' ').replace(/_/g, '\\_').trim();
+
 /** Makes user input safe for a PostgREST ilike pattern (`*` is the wildcard; `_` is widened to `*`). */
 const likeSafe = (s) => String(s).replace(/[%,()\\]/g, ' ').replace(/_/g, '*').trim();
 
@@ -81,6 +84,7 @@ class SupabaseStore {
 
   async listPlayers(world, o = {}) {
     const filters = [['world', 'eq', world]];
+    if (o.exactName) filters.push(['name', 'ilike', exactSafe(o.exactName)]);
     if (o.q) filters.push(['name', 'ilike', `*${likeSafe(o.q)}*`]);
     if (o.tribe != null) filters.push(['tribe', 'eq', o.tribe]);
     if (o.alliance != null) filters.push(['alliance_id', 'eq', o.alliance]);
@@ -113,6 +117,26 @@ class SupabaseStore {
       .map((r) => ({ taken_at: r.snapshots?.taken_at, population: r.population, villages: r.villages, alliance_id: r.alliance_id, rank: r.rank ?? null }))
       .filter((r) => r.taken_at)
       .reverse();
+  }
+
+  /** History rows of the given players at ONE snapshot (used as the "then" side of a growth comparison). */
+  async getPlayersAtSnapshot(snapshotId, playerIds) {
+    if (!playerIds.length) return [];
+    return this.db.selectAll('player_history', {
+      select: 'player_id,population,villages,rank,alliance_id',
+      filters: [['snapshot_id', 'eq', snapshotId], ['player_id', 'in', playerIds]],
+      order: 'player_id.asc',
+    });
+  }
+
+  /** Per-day history of a handful of players from `fromSnapshotId` (inclusive) to the latest snapshot. */
+  async getPlayersHistory(playerIds, fromSnapshotId) {
+    if (!playerIds.length) return [];
+    return this.db.selectAll('player_history', {
+      select: 'player_id,snapshot_id,population,villages,rank',
+      filters: [['player_id', 'in', playerIds], ['snapshot_id', 'gte', fromSnapshotId]],
+      order: 'snapshot_id.asc,player_id.asc',
+    });
   }
 
   async listAlliances(world, o = {}) {

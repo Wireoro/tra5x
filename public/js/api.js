@@ -11,14 +11,16 @@ export async function api(path, params = {}, { fresh = false } = {}) {
   const res = await fetch(url, { headers: { accept: 'application/json' } });
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
+    let body = null;
     try {
-      const body = await res.json();
+      body = await res.json();
       if (body && body.error) msg = body.error;
     } catch {
       /* ignore */
     }
     const err = new Error(msg);
     err.status = res.status;
+    err.body = body;
     throw err;
   }
   const data = await res.json();
