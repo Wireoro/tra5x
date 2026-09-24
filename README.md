@@ -10,7 +10,8 @@ Macro statistics dashboard for the Travian world **rog.x5.international.travian.
 | Overview | Players, alliances, villages, population with change since the previous snapshot; tribe split (players / villages / population); player-size and villages-per-player distributions; quadrants and distance rings; top 10 players and alliances; biggest gainers and losers. |
 | Players | Searchable, sortable, filterable table (tribe, alliance tag); detail dialog with population history and a link to the map. |
 | Alliances | Sortable table; detail dialog with member list and population history. |
-| Trends | Population, villages, players, alliances over time; player churn; population by tribe; top-5 alliances. Ranges 7 / 30 / 90 days / all. |
+| Trends | Population, villages, players, alliances over time; player churn; population by tribe; top-5 alliances; population concentration (top 10 / top 100 share). Ranges 7 / 30 / 90 days / all. |
+| Activity | Change log between daily snapshots: villages founded / conquered / lost, new and departed players, alliance joins, leaves and switches, alliances founded and dissolved. Player and alliance dialogs show their own recent activity. |
 | Map | Canvas map with density heat-map, tribe view, alliance highlight, player search, pan / zoom, hover details. |
 
 Every chart has a "Table view" with the same numbers, and there is a light and a dark theme.
@@ -34,17 +35,51 @@ Render web service (Node 22, zero dependencies)
  |- src/server.js      JSON API + static dashboard, gzip, ETag, CSP, per-IP rate limit
  '- public/            vanilla JS dashboard, hand-drawn SVG charts, canvas map
 Supabase project "Tra5x" (Paris, eu-west-3, ref fqvdwbrnfbmtvdghkvzr)
- '- tables: snapshots, tribe_stats, players, alliances, player_history, alliance_history, map_cache, ingest_log
-    function: ingest_snapshot(jsonb)  (one transaction per daily snapshot)
+ '- tables: snapshots, tribe_stats, snapshot_breakdowns, players, alliances, player_history, alliance_history,
+    |         events, map_cache, ingest_log
+    '- functions: ingest_snapshot(jsonb) (one transaction per daily snapshot), prune_history(), storage_stats()
 ```
 
 The database schema is in `supabase/migrations/` and is **already applied** to the Tra5x project. All tables have row level
 security enabled with no policies and no grants for `anon`/`authenticated`: only the server, using the service-role key,
 can read or write. The browser never talks to Supabase directly.
 
-Storage stays small: per day it keeps one `snapshots` row, a few `tribe_stats` rows, one `alliance_history` row per
-alliance and `player_history` rows for the top `HISTORY_TOP_PLAYERS` (default 500) players. The current state of every
-player and alliance is kept in `players` / `alliances`, with the previous population for the 24 h deltas.
+### What is recorded every day
+
+Each new `map.sql` becomes one **snapshot**, and everything below is stored against it, so any statistic can be charted
+over time:
+
+| Table | One row per day for... |
+| --- | --- |
+| `snapshots` | the world: players, alliances, villages, Natar villages, population, capitals, cities, harbours, players in alliances, new / departed players, top-10 and top-100 population share, plus the raw distributions as JSON |
+| `tribe_stats` | every tribe: players, villages, population |
+| `alliance_history` | **every alliance**: members, villages, population |
+| `player_history` | **every player**: population, villages, alliance, tribe, rank |
+| `snapshot_breakdowns` | every bucket of the player-size and villages-per-player distributions, every quadrant, distance ring and region |
+| `events` | every change since the previous day (see below) |
+
+`events` kinds: `village_founded`, `village_conquered` (new owner and previous owner), `village_abandoned`, `player_new`,
+`player_departed`, `alliance_joined`, `alliance_left`, `alliance_switched`, `alliance_created`, `alliance_disbanded`.
+Village events come from comparing today's map with yesterday's tile by tile; the first snapshot has no baseline, so it
+produces none. If a single day would create more than `MAX_VILLAGE_EVENTS` (30 000) village changes, for example after a
+world reset, village events are skipped for that day and a warning is logged.
+
+`players` and `alliances` hold the current state, with the previous population for the 24 h deltas. `map_cache` holds the
+latest map for the interactive view.
+
+### Database size (read this before going live)
+
+Measured on the real schema with a 30 000-player world: about **4 MB per day**, almost all of it `player_history`
+(one row per player per day, roughly 130 bytes including indexes). That is about 1.4 GB a year. The Supabase free plan
+includes 500 MB, which is enough for roughly **3-4 months** at that world size; smaller worlds last proportionally longer.
+
+The footer of the dashboard and `/api/status` show the database size, how much of `DB_SIZE_LIMIT_MB` is used and an
+estimate of the days left, and a banner appears at 80 %. Options when it gets close:
+
+- `HISTORY_RETENTION_DAYS=180` deletes snapshots (with all their history rows and events) older than that after each
+  ingestion. The newest snapshot is never deleted.
+- `HISTORY_TOP_PLAYERS=2000` keeps the per-day history for the top N players only (0 = every player).
+- Upgrade the Supabase plan.
 
 ## Refresh schedule
 
@@ -56,8 +91,11 @@ The service checks whether a download is due on boot, every 15 minutes, and when
 3. A failed attempt is retried after `REFRESH_RETRY_MINUTES` (15). Truncated or HTML responses are rejected
    ("refusing to ingest") and reported in `/api/status` and in a banner on the dashboard.
 
-On a free Render instance the service sleeps when idle and refreshes when it wakes. For an always-on service choose the
-Starter plan, or ping `/api/status` every 5-10 minutes from a free uptime monitor.
+On a free Render instance the service sleeps when idle and only refreshes while awake. Travian publishes just today's
+file, so **a day the service was asleep at midnight is a gap in the history that cannot be filled afterwards**. Avoid gaps
+by choosing the Starter plan, or by pinging `/healthz` every 10 minutes from a free uptime monitor (one always-on free
+service fits within Render's 750 free hours a month). As a second safety net, a scheduler such as cron-job.org can call
+`POST /api/admin/refresh` with the bearer token shortly after server midnight.
 
 ## Deploy on Render
 
@@ -72,7 +110,7 @@ Starter plan, or ping `/api/status` every 5-10 minutes from a free uptime monito
 ## Run locally
 
 ```bash
-npm test                 # 26 tests: parser, aggregation, ingestion rules, API, security, rate limit, Supabase client
+npm test                 # 35 tests: parser, aggregation, ingestion rules, change log, API, security, rate limit, Supabase client
 npm run demo             # dashboard on http://127.0.0.1:3000 with SYNTHETIC data (21 fake days), in-memory store
 node --env-file=.env src/server.js   # real run: needs SUPABASE_SERVICE_ROLE_KEY in .env
 npm run ingest           # one-shot download + store (cron / GitHub Actions friendly), add -- --force to override checks
@@ -83,7 +121,9 @@ Without Supabase credentials the server uses the in-memory store and says so in 
 ## API (all JSON, GET unless noted)
 
 `/healthz` (plain text) - `/api/status` - `/api/overview` - `/api/history?days=30` - `/api/players?q=&tribe=&tag=&alliance=&sort=&dir=&limit=&offset=` -
-`/api/players/:id` - `/api/alliances?q=&sort=&dir=&limit=&offset=` - `/api/alliances/:id` - `/api/movers` - `/api/map` -
+`/api/players/:id` (with history and recent events) - `/api/alliances?q=&sort=&dir=&limit=&offset=` - `/api/alliances/:id` -
+`/api/events?kind=village|alliance|player|<kind,...>&player=&alliance=&snapshot=&limit=&offset=` -
+`/api/breakdowns?kind=region|ring|quadrant|pop_bucket|village_bucket&days=` - `/api/movers` - `/api/map` -
 `POST /api/admin/refresh` (bearer token).
 
 ## Troubleshooting

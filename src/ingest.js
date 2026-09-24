@@ -7,6 +7,7 @@ const zlib = require('node:zlib');
 const { fetchMapSql } = require('./travian');
 const { iterateRows } = require('./parser');
 const { aggregate } = require('./aggregate');
+const { diffVillages } = require('./events');
 
 const MIN_CHECK_GAP_MS = 5 * 60 * 1000;
 
@@ -45,6 +46,27 @@ class Ingestor {
       lastModified: force ? null : latest?.source_last_modified,
       userAgent: config.userAgent,
     });
+  }
+
+  /**
+   * Village founded / conquered / abandoned events: diff the new map against the map cached for the
+   * latest stored snapshot. Best effort - any problem just means no events for this day.
+   */
+  async villageEvents(latest, nextMap) {
+    if (!latest) return [];
+    try {
+      const prev = await this.store.getMap(this.config.world);
+      if (!prev || Number(prev.snapshot_id) !== Number(latest.id)) {
+        this.logger.warn('[tra5x] village events skipped: cached map does not match the last snapshot');
+        return [];
+      }
+      const { events, skipped } = diffVillages(prev.payload, nextMap, { maxEvents: this.config.maxVillageEvents });
+      if (skipped) this.logger.warn(`[tra5x] village events skipped: ${skipped}`);
+      return events;
+    } catch (err) {
+      this.logger.warn(`[tra5x] village events skipped: ${err.message}`);
+      return [];
+    }
   }
 
   /** Runs one ingestion. Never throws; returns {status, ...}. */
@@ -94,15 +116,17 @@ class Ingestor {
             etag: src.etag || null,
             source_last_modified: src.lastModified || null,
             history_top_players: config.historyTopPlayers,
+            village_events: await this.villageEvents(latest, agg.map),
           };
           payload.meta = { ...payload.meta, parser: { tuples: pstats.tuples, skipped: pstats.skipped, bytes: text.length } };
           const snapshotId = await store.ingest(payload, agg.map);
           result = {
             status: 'ok',
             snapshotId,
-            message: `Stored snapshot ${snapshotId}: ${payload.totals.players} players, ${payload.totals.alliances} alliances, ${payload.totals.villages} villages`,
+            message: `Stored snapshot ${snapshotId}: ${payload.totals.players} players, ${payload.totals.alliances} alliances, ${payload.totals.villages} villages, ${payload.village_events.length} village changes`,
             totals: payload.totals,
           };
+          await this.applyRetention();
           if (this.onIngested) this.onIngested(result);
         }
       }
@@ -116,6 +140,18 @@ class Ingestor {
     await store.logFinish(logId, { status: result.status, message: result.message, snapshotId: result.snapshotId }).catch(() => {});
     this.running = false;
     return result;
+  }
+
+  /** Optional housekeeping: drop history older than HISTORY_RETENTION_DAYS. Never fails the ingestion. */
+  async applyRetention() {
+    const { config } = this;
+    if (!(config.retentionDays > 0)) return;
+    try {
+      const n = await this.store.prune(config.world, config.retentionDays);
+      if (n > 0) this.logger.log(`[tra5x] retention: removed ${n} snapshot(s) older than ${config.retentionDays} days`);
+    } catch (err) {
+      this.logger.warn(`[tra5x] retention failed: ${err.message}`);
+    }
   }
 
   /** Decides whether a download is due and, if so, runs it. Safe to call from anywhere, any time. */

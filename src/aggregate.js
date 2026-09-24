@@ -42,7 +42,9 @@ function aggregate(rows) {
   const alliances = new Map();
   const regions = new Map();
 
-  const map = { ver: 1, x: [], y: [], t: [], p: [], u: [], a: [], f: [], n: [], pn: [], at: [] };
+  // ver 2 adds ids so consecutive maps can be diffed: v = village id per village, pi / ai = player / alliance
+  // id for each entry of pn / at (the arrays u and a index into them).
+  const map = { ver: 2, x: [], y: [], t: [], p: [], u: [], a: [], f: [], n: [], v: [], pn: [], pi: [], at: [], ai: [] };
   const playerIdx = new Map();
   const allianceIdx = new Map();
 
@@ -80,6 +82,7 @@ function aggregate(rows) {
       ui = map.pn.length;
       playerIdx.set(r.playerId, ui);
       map.pn.push(r.player || `#${r.playerId}`);
+      map.pi.push(r.playerId);
     }
     let ai = -1;
     if (r.allianceId > 0) {
@@ -88,6 +91,7 @@ function aggregate(rows) {
         ai = map.at.length;
         allianceIdx.set(r.allianceId, ai);
         map.at.push(r.alliance || `#${r.allianceId}`);
+        map.ai.push(r.allianceId);
       }
     }
     map.x.push(r.x);
@@ -98,6 +102,7 @@ function aggregate(rows) {
     map.a.push(ai);
     map.f.push((r.capital ? 1 : 0) | (r.city ? 2 : 0) | (r.harbor ? 4 : 0));
     map.n.push(r.village || '');
+    map.v.push(r.villageId ?? 0);
 
     const tv = tribeVillages.get(r.tribe) || { villages: 0, population: 0 };
     tv.villages++;
@@ -226,9 +231,33 @@ function aggregate(rows) {
       alliances: [...alliances.values()],
       players: playerList,
       meta,
+      breakdowns: buildBreakdowns(meta, regions),
     },
     map,
   };
+}
+
+const bucketKey = (b) => (b.max == null ? `${b.min}+` : `${b.min}-${b.max}`);
+
+/**
+ * Flat, queryable rows for the `snapshot_breakdowns` table (one per kind + bucket):
+ * pop_bucket / village_bucket (`players` = players in the bucket), quadrant, ring and region
+ * (`villages` / `population` of player villages).
+ */
+function buildBreakdowns(meta, regions) {
+  const out = [];
+  for (const b of meta.pop_buckets) out.push({ kind: 'pop_bucket', key: bucketKey(b), lo: b.min, hi: b.max, players: b.count, villages: 0, population: 0 });
+  for (const b of meta.village_buckets) out.push({ kind: 'village_bucket', key: bucketKey(b), lo: b.min, hi: b.max, players: b.count, villages: 0, population: 0 });
+  for (const [key, q] of Object.entries(meta.quadrants)) out.push({ kind: 'quadrant', key, lo: null, hi: null, players: 0, villages: q.villages, population: q.population });
+  for (const r of meta.rings.items) out.push({ kind: 'ring', key: `${r.from}-${r.to}`, lo: r.from, hi: r.to, players: 0, villages: r.villages, population: r.population });
+  const seen = new Set();
+  for (const g of [...regions.values()].sort((a, b) => b.villages - a.villages).slice(0, 500)) {
+    const key = String(g.region).slice(0, 80);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ kind: 'region', key, lo: null, hi: null, players: 0, villages: g.villages, population: g.population });
+  }
+  return out;
 }
 
 module.exports = { aggregate, bucketize, POP_EDGES, VILLAGE_EDGES };

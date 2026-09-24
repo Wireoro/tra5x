@@ -87,6 +87,64 @@ function segmented(options, value, onChange, label) {
   return wrap;
 }
 
+// ------------------------------------------------------------------ events (change log)
+const EVENT_LABELS = {
+  village_founded: 'Village founded',
+  village_conquered: 'Village conquered',
+  village_abandoned: 'Village lost',
+  player_new: 'New player',
+  player_departed: 'Player left',
+  alliance_joined: 'Joined alliance',
+  alliance_left: 'Left alliance',
+  alliance_switched: 'Changed alliance',
+  alliance_created: 'Alliance founded',
+  alliance_disbanded: 'Alliance disbanded',
+};
+const EVENT_FILTERS = [['', 'All'], ['village', 'Villages'], ['alliance', 'Alliances'], ['player', 'Players']];
+
+const playerLink = (id, name) => (id ? nameButton(name || `#${id}`, () => openPlayer(id)) : h('span', { class: 'muted' }, '-'));
+const allianceLink = (id, tag) => (id ? nameButton(`[${tag || id}]`, () => openAlliance(id)) : h('span', { class: 'muted' }, 'no alliance'));
+const tileText = (e) => (e.x === null || e.x === undefined ? '' : `(${e.x}|${e.y})`);
+
+/** One readable sentence per event, with clickable players / alliances. */
+function describeEvent(e) {
+  const where = tileText(e);
+  switch (e.kind) {
+    case 'village_founded':
+      return h('span', null, playerLink(e.player_id, e.player_name), ` founded ${e.village_name ? `"${e.village_name}" ` : 'a village '}at ${where}`);
+    case 'village_conquered':
+      return h('span', null, playerLink(e.player_id, e.player_name), ` took ${e.village_name ? `"${e.village_name}" ` : 'the village '}at ${where} from `, playerLink(e.from_player_id, e.from_player_name));
+    case 'village_abandoned':
+      // the former owner is very often gone from the map too, so this one is not a link
+      return h('span', null, `${e.village_name ? `"${e.village_name}" ` : 'Village '}at ${where} of `, h('b', null, e.player_name || `#${e.player_id}`), ' is gone (destroyed or abandoned)');
+    case 'player_new':
+      return h('span', null, playerLink(e.player_id, e.player_name), ' appeared on the map', e.alliance_id ? [' (', allianceLink(e.alliance_id, e.alliance_tag), ')'] : '');
+    case 'player_departed':
+      return h('span', null, h('b', null, e.player_name || `#${e.player_id}`), ' is no longer on the map', e.alliance_id ? [' (was ', allianceLink(e.alliance_id, e.alliance_tag), ')'] : '');
+    case 'alliance_joined':
+      return h('span', null, playerLink(e.player_id, e.player_name), ' joined ', allianceLink(e.alliance_id, e.alliance_tag));
+    case 'alliance_left':
+      return h('span', null, playerLink(e.player_id, e.player_name), ' left ', allianceLink(e.from_alliance_id, e.from_alliance_tag));
+    case 'alliance_switched':
+      return h('span', null, playerLink(e.player_id, e.player_name), ' moved from ', allianceLink(e.from_alliance_id, e.from_alliance_tag), ' to ', allianceLink(e.alliance_id, e.alliance_tag));
+    case 'alliance_created':
+      return h('span', null, allianceLink(e.alliance_id, e.alliance_tag), ' appeared');
+    case 'alliance_disbanded':
+      return h('span', null, h('b', null, `[${e.alliance_tag || e.alliance_id}]`), ' disbanded');
+    default:
+      return h('span', null, e.kind);
+  }
+}
+
+function eventColumns() {
+  return [
+    { label: 'Day', cell: (e) => (e.taken_at ? fmt.date(e.taken_at) : '-') },
+    { label: 'Event', cell: (e) => EVENT_LABELS[e.kind] || e.kind },
+    { label: 'What happened', cell: describeEvent },
+    { label: 'Population', r: true, cell: (e) => fmt.int(e.population) },
+  ];
+}
+
 // ------------------------------------------------------------------ modals
 function openModal(title, buildBody) {
   const dlg = h('dialog', { 'aria-label': title });
@@ -104,14 +162,14 @@ function openModal(title, buildBody) {
   document.body.append(dlg);
   dlg.showModal();
   buildBody(body).catch((err) => {
-    clear(body).append(h('p', { class: 'empty' }, `Could not load details: ${err.message}`));
+    clear(body).append(h('p', { class: 'empty' }, err.status === 404 ? 'This one is no longer on the map (the account or alliance was deleted or dissolved).' : `Could not load details: ${err.message}`));
   });
 }
 
 async function openPlayer(id) {
   openModal('Player', async (body) => {
     body.append(h('p', { class: 'empty' }, 'Loading...'));
-    const { player: p, history } = await api('players/' + id);
+    const { player: p, history, events } = await api('players/' + id);
     clear(body);
     body.previousSibling.firstChild.textContent = p.name;
     const facts = h('div', { class: 'facts' },
@@ -134,15 +192,16 @@ async function openPlayer(id) {
     if (history.length >= 2) {
       lineChart(chart, { series: [{ label: 'Population', color: seriesColor(1), points: history.map((r) => ({ t: Date.parse(r.taken_at), v: r.population })) }], height: 200, ariaLabel: `Population history of ${p.name}` });
     } else {
-      chart.append(h('p', { class: 'muted' }, 'History is kept for the largest players and needs at least two daily snapshots.'));
+      chart.append(h('p', { class: 'muted' }, 'Every player is recorded once a day; the chart needs at least two daily snapshots.'));
     }
+    if (events && events.length) body.append(h('h3', null, 'Recent activity'), dataTable({ columns: eventColumns(), rows: events }));
   });
 }
 
 async function openAlliance(id) {
   openModal('Alliance', async (body) => {
     body.append(h('p', { class: 'empty' }, 'Loading...'));
-    const [{ alliance: a, history }, members] = await Promise.all([api('alliances/' + id), api('players', { alliance: id, sort: 'population', dir: 'desc', limit: 50 })]);
+    const [{ alliance: a, history, events }, members] = await Promise.all([api('alliances/' + id), api('players', { alliance: id, sort: 'population', dir: 'desc', limit: 50 })]);
     clear(body);
     body.previousSibling.firstChild.textContent = `[${a.tag}]`;
     body.append(h('div', { class: 'facts' },
@@ -158,6 +217,7 @@ async function openAlliance(id) {
     else chart.append(h('p', { class: 'muted' }, 'Needs at least two daily snapshots.'));
     body.append(h('h3', null, `Members (top ${Math.min(50, members.total)} by population)`),
       dataTable({ columns: playerColumns({ withRank: false }).filter((c) => c.label !== 'Alliance'), rows: members.rows }));
+    if (events && events.length) body.append(h('h3', null, 'Recent activity'), dataTable({ columns: eventColumns(), rows: events }));
   });
 }
 
@@ -196,6 +256,15 @@ function renderChrome() {
   }
   const last = st.ingest && st.ingest.lastResult;
   if (last && last.status === 'error') msgs.push(`The last refresh failed: ${last.message}`);
+  const stg = st.storage;
+  const stgNode = $('#storage');
+  if (stg && stg.db_bytes !== null && stg.db_bytes !== undefined) {
+    const mb = (b) => `${fmt.int(Math.round(b / 1048576))} MB`;
+    stgNode.textContent = ` Database: ${mb(stg.db_bytes)} of ${mb(stg.limit_bytes)} (${fmt.pct(stg.used_ratio, 0)}), history of ${stg.player_history}${stg.retention_days ? `, kept ${stg.retention_days} days` : ''}${stg.est_days_left !== null && stg.est_days_left !== undefined ? `, room for about ${fmt.int(stg.est_days_left)} more days` : ''}.`;
+    if (stg.used_ratio >= 0.8) msgs.push(`The database is ${fmt.pct(stg.used_ratio, 0)} full. Set HISTORY_RETENTION_DAYS or HISTORY_TOP_PLAYERS, or upgrade the Supabase plan.`);
+  } else {
+    stgNode.textContent = '';
+  }
   banner.hidden = !msgs.length;
   banner.textContent = msgs.join(' ');
 }
@@ -407,6 +476,19 @@ async function viewTrends(root, params, alive) {
       series: hist.tribes.filter((tr) => tr.tribe !== 5).map((tr) => ({ label: tr.name, color: tribeColor(tr.tribe), points: tr.points.map((p) => ({ t: Date.parse(p.taken_at), v: p.population })) })),
       height: 260, ariaLabel: 'Population by tribe over time',
     });
+    const concHost = h('div');
+    const withShare = snaps.filter((x) => x.top10_share !== null && x.top10_share !== undefined);
+    if (withShare.length >= 2) {
+      lineChart(concHost, {
+        series: [
+          { label: 'Top 10', color: seriesColor(1), points: withShare.map((x) => ({ t: Date.parse(x.taken_at), v: Number(x.top10_share) * 100 })) },
+          { label: 'Top 100', color: seriesColor(2), points: withShare.map((x) => ({ t: Date.parse(x.taken_at), v: Number(x.top100_share) * 100 })) },
+        ],
+        zeroBase: true, height: 200, format: (v) => `${v.toFixed(1)}%`, ariaLabel: 'Share of total population held by the top 10 and top 100 players',
+      });
+    } else {
+      concHost.append(h('p', { class: 'muted' }, 'Recorded from now on; needs two daily snapshots.'));
+    }
     const allyHost = h('div');
     lineChart(allyHost, {
       series: hist.alliances.map((a, i) => ({ label: `[${a.tag}]`, color: seriesColor(i + 1), points: a.points.map((p) => ({ t: Date.parse(p.taken_at), v: p.population })) })),
@@ -415,8 +497,34 @@ async function viewTrends(root, params, alive) {
     clear(body).append(
       h('div', { class: 'grid' }, single('Population', 'population', 'all players'), single('Villages', 'villages', 'player villages'), single('Players', 'players', 'active accounts'), single('Alliances', 'alliances', 'with at least one member')),
       h('div', { class: 'grid wide' }, card('Player churn', 'new and departed accounts per snapshot', churnHost), card('Population by tribe', 'Natars excluded', tribeHost)),
-      card('Top alliances', 'population of the current top 5', allyHost));
+      card('Top alliances', 'population of the current top 5', allyHost),
+      card('Population concentration', 'share of the world population held by the largest players (%)', concHost));
   }
+  await load();
+}
+
+async function viewActivity(root, params, alive) {
+  const st = { kind: params.get('kind') || '', offset: 0, limit: 50 };
+  const results = h('div');
+  const filterHost = h('div', { class: 'filters' });
+
+  async function load() {
+    clear(filterHost).append(segmented(EVENT_FILTERS, st.kind, (k) => { st.kind = k; st.offset = 0; load(); }, 'Event type'));
+    results.classList.add('loading');
+    try {
+      const data = await api('events', { kind: st.kind, limit: st.limit, offset: st.offset });
+      if (!alive()) return;
+      clear(results).append(
+        dataTable({ columns: eventColumns(), rows: data.rows, empty: 'No changes recorded yet. Events appear after the second daily snapshot.' }),
+        pager(st, data.total, (o) => { st.offset = o; load(); }));
+    } catch (err) {
+      clear(results).append(h('p', { class: 'empty' }, `Could not load activity: ${err.message}`));
+    } finally {
+      results.classList.remove('loading');
+    }
+  }
+
+  clear(root).append(h('div', { class: 'stack' }, filterHost, card('Activity', 'what changed between daily snapshots, newest day first, biggest villages first', results)));
   await load();
 }
 
@@ -447,8 +555,8 @@ function renderEmpty(root) {
 }
 
 // ------------------------------------------------------------------ router
-const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, map: viewMap };
-const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', map: 'Map' };
+const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, map: viewMap };
+const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', map: 'Map' };
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');

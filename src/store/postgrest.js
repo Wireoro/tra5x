@@ -63,6 +63,11 @@ class PostgrestClient {
   async select(table, q = {}) {
     const params = [['select', q.select || '*']];
     for (const [col, op, val] of q.filters || []) {
+      if (col === 'or') {
+        // ['or', '', 'player_id.eq.5,from_player_id.eq.5'] -> or=(player_id.eq.5,from_player_id.eq.5)
+        params.push(['or', `(${val})`]);
+        continue;
+      }
       const v = op === 'in' ? `(${val.join(',')})` : val;
       params.push([col, `${op}.${v}`]);
     }

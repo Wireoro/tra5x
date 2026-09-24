@@ -102,6 +102,30 @@ function advance(world) {
     world.addVillage(p, true);
     world.players.push(p);
   }
+
+  const active = () => world.players.filter((p) => p.leftDay === null);
+
+  // Conquests: a non-capital village changes owner (same tile, same village id).
+  const conquests = Math.floor(rand() * 4);
+  for (let i = 0; i < conquests; i++) {
+    const pool = active();
+    const attacker = pool[Math.floor(rand() * pool.length)];
+    const victim = pool[Math.floor(rand() * pool.length)];
+    if (!attacker || !victim || attacker === victim || attacker.villages.length >= 12) continue;
+    const idx = victim.villages.findIndex((v) => !v.capital);
+    if (idx === -1) continue;
+    attacker.villages.push(victim.villages.splice(idx, 1)[0]);
+  }
+
+  // Alliance moves: someone joins, leaves or switches alliance.
+  const moves = Math.floor(rand() * 3);
+  for (let i = 0; i < moves && world.alliances.length; i++) {
+    const pool = active();
+    const p = pool[Math.floor(rand() * pool.length)];
+    if (!p) continue;
+    const options = [null, ...world.alliances].filter((a) => a !== p.alliance);
+    p.alliance = options[Math.floor(rand() * options.length)];
+  }
 }
 
 const q = (s) => (s === null || s === undefined ? 'NULL' : `'${String(s).replace(/\\/g, '\\\\').replace(/'/g, rngStyle(s))}'`);

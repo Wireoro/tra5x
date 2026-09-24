@@ -7,10 +7,31 @@ const path = require('node:path');
 const defaultConfig = require('./config');
 const { createStore } = require('./store');
 const { Ingestor } = require('./ingest');
-const { buildOverview, buildHistory, tribeName } = require('./views');
+const { buildOverview, buildHistory, buildBreakdowns, tribeName } = require('./views');
 const { applySecurityHeaders, sendEntry, sendJson, ResponseCache, RateLimiter, createStaticServer } = require('./http-utils');
 
 const TTL = 60 * 1000; // API responses change at most once a day; 60 s keeps the database quiet
+
+const EVENT_GROUPS = {
+  village: ['village_founded', 'village_conquered', 'village_abandoned'],
+  alliance: ['alliance_joined', 'alliance_left', 'alliance_switched', 'alliance_created', 'alliance_disbanded'],
+  player: ['player_new', 'player_departed'],
+};
+const EVENT_KINDS = new Set(Object.values(EVENT_GROUPS).flat());
+const BREAKDOWN_KINDS = new Set(['pop_bucket', 'village_bucket', 'quadrant', 'ring', 'region']);
+const STORAGE_TTL = 10 * 60 * 1000;
+const HISTORY_TABLES = ['snapshots', 'tribe_stats', 'player_history', 'alliance_history', 'snapshot_breakdowns', 'events'];
+
+/** `kind=village,player_new` -> list of event kinds (groups expand); null = no filter; [] = nothing valid. */
+function parseEventKinds(v) {
+  if (!v) return null;
+  const out = new Set();
+  for (const k of String(v).split(',').slice(0, 12)) {
+    if (EVENT_GROUPS[k]) EVENT_GROUPS[k].forEach((x) => out.add(x));
+    else if (EVENT_KINDS.has(k)) out.add(k);
+  }
+  return [...out];
+}
 
 const clampInt = (v, min, max, d) => {
   const n = Number.parseInt(v, 10);
@@ -30,7 +51,18 @@ function safeEqual(a, b) {
 function createApp({ config = defaultConfig, store, ingestor, logger = console } = {}) {
   store = store || createStore(config, logger);
   const cache = new ResponseCache();
-  ingestor = ingestor || new Ingestor({ store, config, logger, onIngested: () => cache.clear() });
+  const storageCache = { at: 0, value: null };
+  ingestor =
+    ingestor ||
+    new Ingestor({
+      store,
+      config,
+      logger,
+      onIngested: () => {
+        cache.clear();
+        storageCache.at = 0;
+      },
+    });
   const limiter = new RateLimiter(config.rateLimitPerMin);
   const serveStatic = createStaticServer(path.join(__dirname, '..', 'public'));
   const world = config.world;
@@ -102,6 +134,31 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
           return { total, limit, offset, rows };
         });
 
+      case '/api/events': {
+        const kinds = parseEventKinds(q.get('kind'));
+        if (kinds && !kinds.length) return sendJson(req, res, 400, { error: 'Unknown event kind' });
+        return cached(req, res, url, TTL, async () => {
+          const limit = clampInt(q.get('limit'), 1, 100, 50);
+          const offset = clampInt(q.get('offset'), 0, 1e6, 0);
+          const { rows, total } = await store.getEvents(world, {
+            kinds,
+            playerId: optInt(q.get('player')),
+            allianceId: optInt(q.get('alliance')),
+            snapshotId: optInt(q.get('snapshot')),
+            limit,
+            offset,
+          });
+          return { total, limit, offset, rows };
+        });
+      }
+
+      case '/api/breakdowns': {
+        const kind = q.get('kind') || 'region';
+        if (!BREAKDOWN_KINDS.has(kind)) return sendJson(req, res, 400, { error: 'Unknown breakdown kind' });
+        const days = clampInt(q.get('days'), 0, 3650, 0);
+        return cached(req, res, url, TTL, () => buildBreakdowns(store, world, { kind, days }));
+      }
+
       case '/api/movers':
         return cached(req, res, url, TTL, async () => {
           const limit = clampInt(q.get('limit'), 1, 50, 15);
@@ -131,8 +188,8 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
       const id = Number(m[1]);
       const player = await store.getPlayer(world, id);
       if (!player) return sendJson(req, res, 404, { error: 'Player not found' });
-      const history = await store.getPlayerHistory(id, 400);
-      return sendJson(req, res, 200, { player: { ...player, tribe_name: tribeName(player.tribe) }, history });
+      const [history, events] = await Promise.all([store.getPlayerHistory(id, 400), store.getEvents(world, { playerId: id, limit: 25 })]);
+      return sendJson(req, res, 200, { player: { ...player, tribe_name: tribeName(player.tribe) }, history, events: events.rows });
     }
 
     const a = /^\/api\/alliances\/(\d+)$/.exec(p);
@@ -141,15 +198,46 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
       const alliance = await store.getAlliance(world, id);
       if (!alliance) return sendJson(req, res, 404, { error: 'Alliance not found' });
       const series = await store.getSnapshotSeries(world, 400);
-      const history = await store.getAllianceHistory([id], series.map((s) => s.id));
-      return sendJson(req, res, 200, { alliance, history });
+      const [history, events] = await Promise.all([store.getAllianceHistory([id], series.map((s) => s.id)), store.getEvents(world, { allianceId: id, limit: 25 })]);
+      return sendJson(req, res, 200, { alliance, history, events: events.rows });
     }
 
     return sendJson(req, res, 404, { error: 'Not found' });
   }
 
+  /** Database usage (cached; the underlying SQL function is cheap but the numbers only move once a day). */
+  async function storageInfo() {
+    if (Date.now() - storageCache.at < STORAGE_TTL) return storageCache.value;
+    let value = null;
+    try {
+      const st = await store.getStorageStats();
+      const limit = config.dbSizeLimitMb * 1024 * 1024;
+      const dbBytes = st.db_bytes == null ? null : Number(st.db_bytes);
+      let daysLeft = null;
+      if (dbBytes != null && !config.retentionDays) {
+        const series = await store.getSnapshotSeries(world, 400);
+        const historyBytes = HISTORY_TABLES.reduce((sum, t) => sum + Number(st.tables?.[t]?.bytes || 0), 0);
+        if (series.length >= 3) daysLeft = Math.max(0, Math.floor(Math.max(0, limit - dbBytes) / (historyBytes / series.length)));
+      }
+      value = {
+        db_bytes: dbBytes,
+        limit_bytes: limit,
+        used_ratio: dbBytes == null ? null : dbBytes / limit,
+        est_days_left: daysLeft,
+        tables: st.tables || {},
+        player_history: config.historyTopPlayers > 0 ? `top ${config.historyTopPlayers} players` : 'all players',
+        retention_days: config.retentionDays || null,
+      };
+    } catch (err) {
+      logger.warn(`[tra5x] storage stats unavailable: ${err.message}`);
+    }
+    storageCache.at = Date.now();
+    storageCache.value = value;
+    return value;
+  }
+
   async function status() {
-    const [latest, log] = await Promise.all([store.getRecentSnapshots(world, 1), store.getIngestLog(world, 5)]);
+    const [latest, log, storage] = await Promise.all([store.getRecentSnapshots(world, 1), store.getIngestLog(world, 5), storageInfo()]);
     const s = latest[0] || null;
     return {
       world,
@@ -159,6 +247,7 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
       latest_snapshot: s && { id: s.id, taken_at: s.taken_at, source_last_modified: s.source_last_modified, players: s.players, villages: s.villages, alliances: s.alliances },
       ingest: ingestor.state(),
       recent_ingests: log,
+      storage,
       refresh: { auto: config.autoRefresh, after_hours: config.refreshAfterHours, poll_minutes: config.pollMinutes },
       source: config.mapFile ? 'local file' : config.mapUrl,
     };

@@ -10,6 +10,7 @@ const { createApp } = require('../src/server');
 const { MemoryStore } = require('../src/store/memory');
 const { parseMapSql } = require('../src/parser');
 const { aggregate } = require('../src/aggregate');
+const { diffVillages } = require('../src/events');
 const { createWorld, advance, toMapSql } = require('./fixture');
 
 const arg = (name, d) => {
@@ -23,8 +24,9 @@ async function main() {
   const port = arg('port', 3000);
   const world = createWorld({ seed: 42, radius: 200, players, alliances: 16, regions: true });
   const store = new MemoryStore();
-  const config = { ...baseConfig, port, world: 'demo.synthetic', mapUrl: 'synthetic demo data', mapFile: '', autoRefresh: false, storeKind: 'memory', historyTopPlayers: 500 };
+  const config = { ...baseConfig, port, world: 'demo.synthetic', mapUrl: 'synthetic demo data', mapFile: '', autoRefresh: false, storeKind: 'memory', historyTopPlayers: 0, retentionDays: 0, maxVillageEvents: 30000, dbSizeLimitMb: 500 };
 
+  let prevMap = null;
   for (let d = 0; d <= days; d++) {
     if (d > 0) advance(world);
     const text = toMapSql(world);
@@ -37,8 +39,10 @@ async function main() {
       taken_at: takenAt,
       source_url: 'synthetic',
       content_hash: crypto.createHash('sha256').update(text).digest('hex'),
-      history_top_players: 500,
+      history_top_players: 0,
+      village_events: prevMap ? diffVillages(prevMap, agg.map).events : [],
     }, agg.map);
+    prevMap = agg.map;
   }
 
   const app = createApp({ config, store, logger: { log() {}, warn() {}, error: console.error } });

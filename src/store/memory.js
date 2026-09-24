@@ -26,6 +26,9 @@ class MemoryStore {
     this.alliances = new Map();
     this.playerHistory = [];
     this.allianceHistory = [];
+    this.breakdowns = [];
+    this.events = [];
+    this.eventSeq = 0;
     this.maps = new Map();
     this.log = [];
   }
@@ -56,6 +59,8 @@ class MemoryStore {
       cities: t.cities || 0,
       harbors: t.harbors || 0,
       players_in_alliance: t.players_in_alliance || 0,
+      top10_share: payload.meta?.concentration?.top10 ?? null,
+      top100_share: payload.meta?.concentration?.top100 ?? null,
       new_players: 0,
       departed_players: 0,
       meta: payload.meta || {},
@@ -63,6 +68,11 @@ class MemoryStore {
     this.snapshots.push(snap);
 
     for (const tr of payload.tribes || []) this.tribeStats.push({ snapshot_id: id, ...tr });
+    for (const b of payload.breakdowns || []) this.breakdowns.push({ snapshot_id: id, ...b });
+
+    // change log: compare incoming players / alliances with the current tables before overwriting them
+    if (hadBaseline) this.recordChanges(snap, payload);
+    for (const e of payload.village_events || []) this.addEvent(snap, e.kind, e);
 
     // players
     const sorted = [...(payload.players || [])].sort((a, b) => b.population - a.population || a.id - b.id);
@@ -124,12 +134,94 @@ class MemoryStore {
       });
     for (const [key, row] of this.alliances) if (row.world === world && row.last_snapshot_id !== id) this.alliances.delete(key);
 
-    sorted.slice(0, payload.history_top_players ?? 500).forEach((p) => {
-      this.playerHistory.push({ snapshot_id: id, player_id: p.id, population: p.population, villages: p.villages, alliance_id: p.alliance_id ?? null, taken_at: snap.taken_at });
+    const topN = payload.history_top_players > 0 ? payload.history_top_players : sorted.length;
+    sorted.slice(0, topN).forEach((p, i) => {
+      this.playerHistory.push({
+        snapshot_id: id,
+        player_id: p.id,
+        population: p.population,
+        villages: p.villages,
+        alliance_id: p.alliance_id ?? null,
+        rank: i + 1,
+        tribe: p.tribe ?? null,
+        taken_at: snap.taken_at,
+      });
     });
 
     this.maps.set(world, { world, snapshot_id: id, updated_at: new Date().toISOString(), payload: map });
     return id;
+  }
+
+  addEvent(snap, kind, f = {}) {
+    this.events.push({
+      id: ++this.eventSeq,
+      world: snap.world,
+      snapshot_id: snap.id,
+      taken_at: snap.taken_at,
+      kind,
+      x: f.x ?? null,
+      y: f.y ?? null,
+      village_id: f.village_id ?? null,
+      village_name: f.village_name ?? null,
+      player_id: f.player_id ?? null,
+      player_name: f.player_name ?? null,
+      from_player_id: f.from_player_id ?? null,
+      from_player_name: f.from_player_name ?? null,
+      alliance_id: f.alliance_id ?? null,
+      alliance_tag: f.alliance_tag ?? null,
+      from_alliance_id: f.from_alliance_id ?? null,
+      from_alliance_tag: f.from_alliance_tag ?? null,
+      population: f.population ?? null,
+    });
+  }
+
+  /** Player / alliance level events (mirrors the SQL function). Must run before the tables are updated. */
+  recordChanges(snap, payload) {
+    const world = snap.world;
+    const seenPlayers = new Set();
+    for (const p of payload.players || []) {
+      seenPlayers.add(p.id);
+      const old = this.players.get(`${world}:${p.id}`);
+      const aid = p.alliance_id ?? null;
+      const base = { player_id: p.id, player_name: p.name, alliance_id: aid, alliance_tag: p.alliance_tag ?? null, population: p.population };
+      if (!old) {
+        this.addEvent(snap, 'player_new', base);
+      } else if ((old.alliance_id ?? null) !== aid) {
+        const kind = old.alliance_id == null ? 'alliance_joined' : aid == null ? 'alliance_left' : 'alliance_switched';
+        this.addEvent(snap, kind, { ...base, from_alliance_id: old.alliance_id ?? null, from_alliance_tag: old.alliance_tag ?? null });
+      }
+    }
+    for (const old of this.players.values()) {
+      if (old.world === world && !seenPlayers.has(old.id)) {
+        this.addEvent(snap, 'player_departed', { player_id: old.id, player_name: old.name, alliance_id: old.alliance_id, alliance_tag: old.alliance_tag, population: old.population });
+      }
+    }
+    const seenAlliances = new Set();
+    for (const a of payload.alliances || []) {
+      seenAlliances.add(a.id);
+      if (!this.alliances.has(`${world}:${a.id}`)) this.addEvent(snap, 'alliance_created', { alliance_id: a.id, alliance_tag: a.tag, population: a.population });
+    }
+    for (const old of this.alliances.values()) {
+      if (old.world === world && !seenAlliances.has(old.id)) this.addEvent(snap, 'alliance_disbanded', { alliance_id: old.id, alliance_tag: old.tag, population: old.population });
+    }
+  }
+
+  async prune(world, days) {
+    if (!(days > 0)) return 0;
+    const mine = this.snapshots.filter((x) => x.world === world);
+    if (mine.length < 2) return 0;
+    const newest = mine.reduce((a, b) => (Date.parse(b.taken_at) > Date.parse(a.taken_at) || (Date.parse(b.taken_at) === Date.parse(a.taken_at) && b.id > a.id) ? b : a));
+    const cutoff = Date.now() - days * 86400000;
+    const drop = new Set(mine.filter((x) => x.id !== newest.id && Date.parse(x.taken_at) < cutoff).map((x) => x.id));
+    if (!drop.size) return 0;
+    const keep = (r) => !drop.has(r.snapshot_id);
+    this.snapshots = this.snapshots.filter((x) => !drop.has(x.id));
+    this.tribeStats = this.tribeStats.filter(keep);
+    this.playerHistory = this.playerHistory.filter(keep);
+    this.allianceHistory = this.allianceHistory.filter(keep);
+    this.breakdowns = this.breakdowns.filter(keep);
+    this.events = this.events.filter(keep);
+    return drop.size;
   }
 
   async logStart(world) {
@@ -186,7 +278,7 @@ class MemoryStore {
       .filter((r) => r.player_id === playerId)
       .sort((a, b) => a.snapshot_id - b.snapshot_id)
       .slice(-limit)
-      .map(({ taken_at, population, villages, alliance_id }) => ({ taken_at, population, villages, alliance_id }));
+      .map(({ taken_at, population, villages, alliance_id, rank }) => ({ taken_at, population, villages, alliance_id, rank }));
   }
 
   async listAlliances(world, o = {}) {
@@ -223,6 +315,36 @@ class MemoryStore {
       .sort((a, b) => (gain ? b.pop_delta - a.pop_delta : a.pop_delta - b.pop_delta) || a.id - b.id)
       .slice(0, limit)
       .map(strip);
+  }
+
+  async getEvents(world, o = {}) {
+    let rows = this.events.filter((e) => e.world === world);
+    if (o.kinds && o.kinds.length) rows = rows.filter((e) => o.kinds.includes(e.kind));
+    if (o.snapshotId != null) rows = rows.filter((e) => e.snapshot_id === o.snapshotId);
+    if (o.playerId != null) rows = rows.filter((e) => e.player_id === o.playerId || e.from_player_id === o.playerId);
+    else if (o.allianceId != null) rows = rows.filter((e) => e.alliance_id === o.allianceId || e.from_alliance_id === o.allianceId);
+    rows.sort((a, b) => b.snapshot_id - a.snapshot_id || cmp(a.population, b.population, 'desc') || a.id - b.id);
+    const total = rows.length;
+    const from = o.offset || 0;
+    return { rows: rows.slice(from, from + (o.limit ?? 50)).map(({ world: _w, ...rest }) => rest), total };
+  }
+
+  async getBreakdowns(snapshotIds, kind) {
+    const set = new Set(snapshotIds);
+    return this.breakdowns
+      .filter((b) => set.has(b.snapshot_id) && b.kind === kind)
+      .sort((a, b) => a.snapshot_id - b.snapshot_id || String(a.key).localeCompare(String(b.key)));
+  }
+
+  async getStorageStats() {
+    const tables = {
+      snapshots: this.snapshots.length,
+      player_history: this.playerHistory.length,
+      alliance_history: this.allianceHistory.length,
+      snapshot_breakdowns: this.breakdowns.length,
+      events: this.events.length,
+    };
+    return { db_bytes: null, tables: Object.fromEntries(Object.entries(tables).map(([k, rows]) => [k, { bytes: null, rows }])) };
   }
 
   async getMap(world) {

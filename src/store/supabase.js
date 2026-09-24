@@ -3,10 +3,13 @@
 const { PostgrestClient } = require('./postgrest');
 
 const SNAPSHOT_SERIES_COLS =
-  'id,taken_at,players,alliances,villages,natar_villages,population,capitals,cities,harbors,players_in_alliance,new_players,departed_players';
+  'id,taken_at,players,alliances,villages,natar_villages,population,capitals,cities,harbors,players_in_alliance,top10_share,top100_share,new_players,departed_players';
 
 const PLAYER_COLS = 'id,name,tribe,alliance_id,alliance_tag,villages,population,prev_population,pop_delta,rank,capital_x,capital_y';
 const ALLIANCE_COLS = 'id,tag,members,villages,population,prev_population,pop_delta,rank';
+
+const EVENT_COLS =
+  'id,snapshot_id,kind,x,y,village_id,village_name,player_id,player_name,from_player_id,from_player_name,alliance_id,alliance_tag,from_alliance_id,from_alliance_tag,population,snapshots(taken_at)';
 
 const PLAYER_SORTS = new Set(['rank', 'population', 'villages', 'pop_delta', 'name']);
 const ALLIANCE_SORTS = new Set(['rank', 'population', 'members', 'villages', 'pop_delta', 'tag']);
@@ -32,6 +35,12 @@ class SupabaseStore {
       { onConflict: 'world', timeoutMs: 180000 },
     );
     return Number(id);
+  }
+
+  /** Deletes snapshots (with their history rows and events) older than `days`; returns how many were removed. */
+  async prune(world, days) {
+    const n = await this.db.rpc('prune_history', { p_world: world, p_keep_days: days }, { timeoutMs: 120000 });
+    return Number(n) || 0;
   }
 
   async logStart(world) {
@@ -95,13 +104,13 @@ class SupabaseStore {
 
   async getPlayerHistory(playerId, limit = 400) {
     const { rows } = await this.db.select('player_history', {
-      select: 'population,villages,alliance_id,snapshot_id,snapshots(taken_at)',
+      select: 'population,villages,alliance_id,rank,tribe,snapshot_id,snapshots(taken_at)',
       filters: [['player_id', 'eq', playerId]],
       order: 'snapshot_id.desc',
       limit,
     });
     return rows
-      .map((r) => ({ taken_at: r.snapshots?.taken_at, population: r.population, villages: r.villages, alliance_id: r.alliance_id }))
+      .map((r) => ({ taken_at: r.snapshots?.taken_at, population: r.population, villages: r.villages, alliance_id: r.alliance_id, rank: r.rank ?? null }))
       .filter((r) => r.taken_at)
       .reverse();
   }
@@ -152,6 +161,38 @@ class SupabaseStore {
       limit,
     });
     return rows;
+  }
+
+  /** Change log (conquests, new villages, alliance moves...). Newest snapshot first, biggest first within a day. */
+  async getEvents(world, o = {}) {
+    const filters = [['world', 'eq', world]];
+    if (o.kinds && o.kinds.length) filters.push(['kind', 'in', o.kinds]);
+    if (o.snapshotId != null) filters.push(['snapshot_id', 'eq', o.snapshotId]);
+    if (o.playerId != null) filters.push(['or', '', `player_id.eq.${o.playerId},from_player_id.eq.${o.playerId}`]);
+    else if (o.allianceId != null) filters.push(['or', '', `alliance_id.eq.${o.allianceId},from_alliance_id.eq.${o.allianceId}`]);
+    const { rows, total } = await this.db.select('events', {
+      select: EVENT_COLS,
+      filters,
+      order: 'snapshot_id.desc,population.desc.nullslast,id.asc',
+      limit: o.limit ?? 50,
+      offset: o.offset ?? 0,
+      count: true,
+    });
+    return { rows: rows.map(({ snapshots, snapshot_id, ...e }) => ({ ...e, snapshot_id, taken_at: snapshots?.taken_at ?? null })), total };
+  }
+
+  /** Per-day breakdown rows (kind = pop_bucket | village_bucket | quadrant | ring | region) for the given snapshots. */
+  async getBreakdowns(snapshotIds, kind) {
+    if (!snapshotIds.length) return [];
+    return this.db.selectAll('snapshot_breakdowns', {
+      filters: [['snapshot_id', 'in', snapshotIds], ['kind', 'eq', kind]],
+      order: 'snapshot_id.asc,key.asc',
+    });
+  }
+
+  /** Database size and per-table footprint (see the storage_stats() SQL function). */
+  async getStorageStats() {
+    return this.db.rpc('storage_stats', {});
   }
 
   async getMap(world) {

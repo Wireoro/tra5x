@@ -34,7 +34,14 @@ module.exports = {
   storeKind, // 'supabase' | 'memory'
   supabaseUrl,
   supabaseKey,
-  historyTopPlayers: int(process.env.HISTORY_TOP_PLAYERS, 500),
+  // Per-day player history: 0 = every player (default), N = only the top N players by population.
+  historyTopPlayers: Math.max(0, int(process.env.HISTORY_TOP_PLAYERS, 0)),
+  // Delete snapshots (and their history / events) older than this many days. 0 = keep everything.
+  retentionDays: Math.max(0, int(process.env.HISTORY_RETENTION_DAYS, 0)),
+  // Village change detection is skipped when a single day produces more changes than this (world reset guard).
+  maxVillageEvents: int(process.env.MAX_VILLAGE_EVENTS, 30000),
+  // Size of your Supabase database plan (free tier = 500 MB); only used for the usage indicator in /api/status.
+  dbSizeLimitMb: int(process.env.DB_SIZE_LIMIT_MB, 500),
 
   // Refresh policy. Travian regenerates map.sql once per day at server midnight, so once a
   // snapshot is stored we stay quiet for `refreshAfterHours`, then poll every `pollMinutes`

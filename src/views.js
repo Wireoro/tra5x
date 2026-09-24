@@ -98,13 +98,32 @@ async function buildOverview(store, world) {
   };
 }
 
-/** Time series for the Trends tab. `days` = 0 means everything stored. */
-async function buildHistory(store, world, { days = 0, allianceCount = 5 } = {}) {
+/** Snapshots of the last `days` days (0 = everything stored), oldest first. */
+async function seriesWindow(store, world, days) {
   let series = await store.getSnapshotSeries(world, 400);
   if (days > 0 && series.length) {
     const cutoff = Date.parse(series[series.length - 1].taken_at) - days * 86400000;
     series = series.filter((s) => Date.parse(s.taken_at) >= cutoff);
   }
+  return series;
+}
+
+/** Per-day rows of one breakdown kind (region, ring, quadrant, pop_bucket, village_bucket). */
+async function buildBreakdowns(store, world, { kind, days = 0 }) {
+  const series = await seriesWindow(store, world, days);
+  const takenAt = new Map(series.map((s) => [s.id, s.taken_at]));
+  const rows = await store.getBreakdowns(series.map((s) => s.id), kind);
+  return {
+    world,
+    kind,
+    snapshots: series.map((s) => ({ id: s.id, taken_at: s.taken_at })),
+    rows: rows.map((r) => ({ taken_at: takenAt.get(r.snapshot_id), key: r.key, lo: r.lo == null ? null : Number(r.lo), hi: r.hi == null ? null : Number(r.hi), players: r.players, villages: r.villages, population: Number(r.population) })),
+  };
+}
+
+/** Time series for the Trends tab. `days` = 0 means everything stored. */
+async function buildHistory(store, world, { days = 0, allianceCount = 5 } = {}) {
+  const series = await seriesWindow(store, world, days);
   const ids = series.map((s) => s.id);
   const takenAt = new Map(series.map((s) => [s.id, s.taken_at]));
 
@@ -132,4 +151,4 @@ async function buildHistory(store, world, { days = 0, allianceCount = 5 } = {}) 
   };
 }
 
-module.exports = { buildOverview, buildHistory, tribeName };
+module.exports = { buildOverview, buildHistory, buildBreakdowns, tribeName };
