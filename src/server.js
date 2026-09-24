@@ -9,6 +9,7 @@ const { createStore } = require('./store');
 const { Ingestor } = require('./ingest');
 const { buildOverview, buildHistory, buildBreakdowns, tribeName } = require('./views');
 const { buildCompare, CompareError, DEFAULT_RADIUS, MAX_RADIUS } = require('./compare');
+const { buildRegionDetail } = require('./regions');
 const { applySecurityHeaders, sendEntry, sendJson, ResponseCache, RateLimiter, createStaticServer } = require('./http-utils');
 
 const TTL = 60 * 1000; // API responses change at most once a day; 60 s keeps the database quiet
@@ -193,6 +194,17 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
           return await cached(req, res, url, TTL, () =>
             buildCompare(store, world, { name, radius, origin, days, getMap: loadMap, geoOptions: { radius: config.mapRadius, wrap: config.mapWrap } }),
           );
+        } catch (err) {
+          if (err instanceof CompareError) return sendJson(req, res, err.status, { error: err.message, ...err.extra });
+          throw err;
+        }
+      }
+
+      case '/api/regions': {
+        const key = (q.get('key') || '').trim().slice(0, 200);
+        if (!key) return sendJson(req, res, 400, { error: 'Provide a region key' });
+        try {
+          return await cached(req, res, url, TTL, () => buildRegionDetail(store, world, key, { getMap: loadMap }));
         } catch (err) {
           if (err instanceof CompareError) return sendJson(req, res, err.status, { error: err.message, ...err.extra });
           throw err;

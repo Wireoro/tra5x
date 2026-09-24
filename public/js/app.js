@@ -219,6 +219,50 @@ async function openAlliance(id) {
   });
 }
 
+async function openRegion(key) {
+  openModal('Region', async (body) => {
+    body.append(h('p', { class: 'empty' }, 'Loading...'));
+    const d = await api('regions', { key });
+    clear(body);
+    body.previousSibling.firstChild.textContent = d.region;
+    body.append(h('div', { class: 'facts' },
+      h('span', null, 'Rank ', h('b', null, `#${fmt.int(d.rank)} of ${fmt.int(d.regions_tracked)}`)),
+      h('span', null, 'Villages ', h('b', null, fmt.int(d.totals.villages))),
+      h('span', null, 'Population ', h('b', null, fmt.int(d.totals.population))),
+      h('span', null, 'Avg population / village ', h('b', null, fmt.dec(d.totals.avg_population)))));
+
+    const chart = h('div');
+    body.append(h('h3', null, 'Population over time'), chart);
+    if (d.history.length >= 2) {
+      lineChart(chart, { series: [{ label: 'Population', color: seriesColor(1), points: d.history.map((r) => ({ t: Date.parse(r.taken_at), v: r.population })) }], height: 200, ariaLabel: `Population history of ${d.region}` });
+    } else {
+      chart.append(h('p', { class: 'muted' }, 'Regions are recorded once a day; the chart needs at least two daily snapshots.'));
+    }
+
+    const growthLine = (label, g) => h('p', null, `${label}: `,
+      g ? [deltaNode(g.villages_gain, { suffix: ' villages' }), ', ', deltaNode(g.population_gain, { suffix: ' population' })] : h('span', { class: 'muted' }, 'not enough history yet'));
+    body.append(h('h3', null, 'Change over time'), growthLine('Last 24h', d.growth.d1), growthLine('Last 3 days', d.growth.d3), growthLine('Last 7 days', d.growth.d7));
+
+    body.append(h('h3', null, 'Alliances that dominate this region'));
+    if (!d.alliances_available) {
+      body.append(h('p', { class: 'muted' }, 'Village-level detail is not available yet; it fills in with the next daily snapshot.'));
+    } else if (!d.alliances.length) {
+      body.append(h('p', { class: 'empty' }, 'No occupied villages found here right now.'));
+    } else {
+      body.append(dataTable({
+        columns: [
+          { label: 'Alliance', cell: (a) => (a.alliance_id ? nameButton(`[${a.alliance_tag || a.alliance_id}]`, () => { body.closest('dialog').close(); openAlliance(a.alliance_id); }) : h('span', { class: 'muted' }, 'No alliance')) },
+          { label: 'Villages', r: true, cell: (a) => fmt.int(a.villages) },
+          { label: 'Share', r: true, cell: (a) => fmt.pct(a.village_share, 0) },
+          { label: 'Population', r: true, cell: (a) => fmt.int(a.population) },
+          { label: 'Share', r: true, cell: (a) => fmt.pct(a.population_share, 0) },
+        ],
+        rows: d.alliances,
+      }), h('p', { class: 'muted' }, "Live as of this region's latest snapshot; Natar villages are not counted."));
+    }
+  });
+}
+
 // ------------------------------------------------------------------ status / chrome
 async function loadStatus() {
   try {
@@ -877,11 +921,12 @@ async function viewRegions(root, params, alive) {
     };
     drawChart();
 
-    // full table: every tracked region as of the latest snapshot
+    // full table: every tracked region as of the latest snapshot, with a live text filter
     const tableHost = h('div');
     const sort = { key: 'villages', dir: 'desc' };
+    let filter = '';
     const columns = [
-      { label: 'Region', sort: 'key', cell: (r) => r.key },
+      { label: 'Region', sort: 'key', cell: (r) => nameButton(r.key, () => openRegion(r.key)) },
       { label: 'Villages', r: true, sort: 'villages', cell: (r) => fmt.int(r.villages) },
       { label: 'Village change', r: true, sort: 'village_gain', cell: (r) => deltaNode(r.village_gain) },
       { label: 'Population', r: true, sort: 'population', cell: (r) => fmt.int(r.population) },
@@ -889,10 +934,12 @@ async function viewRegions(root, params, alive) {
       { label: 'Avg population / village', r: true, sort: 'avg_pop', cell: (r) => fmt.dec(r.avg_pop) },
     ];
     const drawTable = () => {
+      const rows = filter ? regions.filter((r) => r.key.toLowerCase().includes(filter)) : regions;
       clear(tableHost).append(dataTable({
         columns,
-        rows: sortRegions(regions, sort),
+        rows: sortRegions(rows, sort),
         sort,
+        empty: filter ? `No region name contains "${filter}".` : 'No regions tracked.',
         onSort: (key) => {
           if (sort.key === key) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
           else {
@@ -904,12 +951,20 @@ async function viewRegions(root, params, alive) {
       }));
     };
     drawTable();
+    const searchIn = h('input', {
+      type: 'search',
+      placeholder: 'region contains...',
+      autocomplete: 'off',
+      'aria-label': 'Search regions',
+      oninput: (e) => { filter = e.target.value.trim().toLowerCase(); drawTable(); },
+    });
 
     clear(body).append(
       kpis,
       card('Biggest regions over time', `top ${Math.min(REGION_TOP_N, regions.length)} by villages right now`, metricHost, chartHost,
         snaps.length < 2 ? h('p', { class: 'muted' }, 'Trends appear after the next daily map.sql refresh (server midnight).') : null),
-      card('Regional overview', previous ? `${fmt.date(latest.taken_at)}, change since the previous snapshot` : fmt.date(latest.taken_at), tableHost,
+      card('Regional overview', previous ? `${fmt.date(latest.taken_at)}, change since the previous snapshot; click a region for details` : `${fmt.date(latest.taken_at)}; click a region for details`,
+        h('div', { class: 'filters' }, h('label', null, 'Search', searchIn)), tableHost,
         h('p', { class: 'muted' }, `Regions come from the "region" field in map.sql, Travian's own labelling of villages; not every world uses it. Up to the ${fmt.int(REGION_CAP)} busiest regions are tracked.`)));
   }
 

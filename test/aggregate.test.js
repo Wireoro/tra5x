@@ -52,3 +52,33 @@ test('distributions add up and the compact map covers every occupied village', (
   for (const k of ['x', 'y', 't', 'p', 'u', 'a', 'f', 'n']) assert.equal(agg.map[k].length, agg.map.count);
   assert.equal(meta.regions.length, 4);
 });
+
+test('the compact map (ver 3) carries a region index per village that reproduces the region totals (Natars excluded)', () => {
+  const { agg } = build({ seed: 11, players: 160, alliances: 7, regions: true });
+  const { map, payload } = agg;
+  assert.equal(map.ver, 3);
+  assert.equal(map.rg.length, map.count);
+  assert.ok(map.rg.every((ri) => ri === -1 || (ri >= 0 && ri < map.rn.length)));
+  assert.deepEqual([...map.rn].sort(), ['Northeast', 'Northwest', 'Southeast', 'Southwest']);
+
+  // re-derive villages/population per region straight from the compact map, the same way regions.js does
+  const NATAR_TRIBE = 5;
+  const byRegion = new Map();
+  for (let i = 0; i < map.count; i++) {
+    if (map.t[i] === NATAR_TRIBE || map.rg[i] === -1) continue;
+    const key = map.rn[map.rg[i]];
+    const r = byRegion.get(key) || { villages: 0, population: 0 };
+    r.villages++;
+    r.population += map.p[i];
+    byRegion.set(key, r);
+  }
+  for (const r of payload.meta.regions) {
+    assert.deepEqual(byRegion.get(r.region), { villages: r.villages, population: r.population });
+  }
+  assert.equal([...byRegion.values()].reduce((s, r) => s + r.villages, 0), payload.totals.villages);
+
+  // a world without regions gets no region names at all, but the array is still present (ver 3 shape)
+  const flat = build({ seed: 12, players: 40, alliances: 3, regions: false });
+  assert.deepEqual(flat.agg.map.rn, []);
+  assert.ok(flat.agg.map.rg.every((ri) => ri === -1));
+});

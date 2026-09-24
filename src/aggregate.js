@@ -30,7 +30,8 @@ function niceRingWidth(maxDist) {
 
 /**
  * Turns parsed map.sql rows into (a) the aggregated payload consumed by the `ingest_snapshot`
- * SQL function / memory store and (b) a compact village list (kept for village-change events and for distances between players).
+ * SQL function / memory store and (b) a compact village list (kept for village-change events, for distances
+ * between players, and for reading the current alliance breakdown of a region straight off the map).
  *
  * Rules: a row is an occupied village when it has a player id > 0. Natars (tribe 5) are counted
  * separately and excluded from player / alliance rankings and totals.
@@ -43,10 +44,12 @@ function aggregate(rows) {
   const regions = new Map();
 
   // ver 2 adds ids so consecutive maps can be diffed: v = village id per village, pi / ai = player / alliance
-  // id for each entry of pn / at (the arrays u and a index into them).
-  const map = { ver: 2, x: [], y: [], t: [], p: [], u: [], a: [], f: [], n: [], v: [], pn: [], pi: [], at: [], ai: [] };
+  // id for each entry of pn / at (the arrays u and a index into them). ver 3 adds rg / rn the same way for the
+  // "region" field of map.sql, so the current alliance breakdown of a region can be read straight from the map.
+  const map = { ver: 3, x: [], y: [], t: [], p: [], u: [], a: [], f: [], n: [], v: [], rg: [], pn: [], pi: [], at: [], ai: [], rn: [] };
   const playerIdx = new Map();
   const allianceIdx = new Map();
+  const regionIdx = new Map();
 
   const totals = {
     tiles: 0,
@@ -94,6 +97,16 @@ function aggregate(rows) {
         map.ai.push(r.allianceId);
       }
     }
+    let ri = -1;
+    if (r.region != null && r.region !== '') {
+      const key = String(r.region).slice(0, 80); // matches the cap used for the region breakdown key
+      ri = regionIdx.get(key);
+      if (ri === undefined) {
+        ri = map.rn.length;
+        regionIdx.set(key, ri);
+        map.rn.push(key);
+      }
+    }
     map.x.push(r.x);
     map.y.push(r.y);
     map.t.push(r.tribe ?? 0);
@@ -103,6 +116,7 @@ function aggregate(rows) {
     map.f.push((r.capital ? 1 : 0) | (r.city ? 2 : 0) | (r.harbor ? 4 : 0));
     map.n.push(r.village || '');
     map.v.push(r.villageId ?? 0);
+    map.rg.push(ri);
 
     const tv = tribeVillages.get(r.tribe) || { villages: 0, population: 0 };
     tv.villages++;
