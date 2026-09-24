@@ -47,12 +47,13 @@ module.exports = {
   // Size of your Supabase database plan (free tier = 500 MB); only used for the usage indicator in /api/status.
   dbSizeLimitMb: int(process.env.DB_SIZE_LIMIT_MB, 500),
 
-  // Refresh policy. Travian regenerates map.sql once per day at server midnight, so once a
-  // snapshot is stored we stay quiet for `refreshAfterHours`, then poll every `pollMinutes`
-  // (conditional GET / content-hash check) until a new file shows up.
+  // Refresh policy. Travian regenerates map.sql once per day at server midnight. Once a snapshot is stored we stay
+  // quiet for `refreshAfterHours` (a little under a day, so polling starts shortly BEFORE the next file is released),
+  // then poll every `pollMinutes` (conditional GET + content hash, so an unchanged file costs almost nothing) until
+  // the new file shows up. With the defaults a new file is stored within about 10 to 15 minutes of its release.
   autoRefresh: !/^(0|false|no|off)$/i.test(process.env.AUTO_REFRESH || 'true'),
-  refreshAfterHours: Number(process.env.REFRESH_AFTER_HOURS || 20),
-  pollMinutes: int(process.env.REFRESH_POLL_MINUTES, 60),
+  refreshAfterHours: Number(process.env.REFRESH_AFTER_HOURS || 23),
+  pollMinutes: Math.max(5, int(process.env.REFRESH_POLL_MINUTES, 10)), // never faster than every 5 minutes
   retryMinutes: int(process.env.REFRESH_RETRY_MINUTES, 15),
 
   // Admin endpoint (POST /api/admin/refresh). Disabled when empty.

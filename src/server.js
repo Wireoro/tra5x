@@ -332,7 +332,9 @@ function start() {
 
   if (config.autoRefresh) {
     setTimeout(() => app.ingestor.maybeRefresh().catch(() => {}), 3000).unref();
-    setInterval(() => app.ingestor.maybeRefresh().catch(() => {}), 15 * 60 * 1000).unref();
+    // the timer must tick at least as often as the poll interval, otherwise it would set the real polling pace
+    const tickMs = Math.min(15, Math.max(5, config.pollMinutes)) * 60 * 1000;
+    setInterval(() => app.ingestor.maybeRefresh().catch(() => {}), tickMs).unref();
   }
 
   const shutdown = () => {

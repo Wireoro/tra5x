@@ -110,11 +110,14 @@ estimate of the days left, and a banner appears at 80 %. Options when it gets cl
 
 ## Refresh schedule
 
-The service checks whether a download is due on boot, every 15 minutes, and whenever the API gets traffic:
+The service checks whether a download is due on boot, every 10 minutes, and whenever the API gets traffic:
 
-1. After a new snapshot is stored it stays quiet for `REFRESH_AFTER_HOURS` (20).
-2. Then it polls every `REFRESH_POLL_MINUTES` (60) with `If-None-Match` / `If-Modified-Since` and a SHA-256 check,
-   so unchanged files are never re-processed.
+1. After a new snapshot is stored it stays quiet for `REFRESH_AFTER_HOURS` (23), which is a little under a day, so polling
+   starts shortly **before** the next file is released. (Snapshot times settle into that rhythm within a day or two of
+   the first run.)
+2. Then it polls every `REFRESH_POLL_MINUTES` (10, minimum 5) with `If-None-Match` / `If-Modified-Since` and a SHA-256 check,
+   so unchanged files are never re-processed and cost almost nothing. A new file is therefore stored within roughly
+   10 to 15 minutes of its release, well inside 30 minutes.
 3. A failed attempt is retried after `REFRESH_RETRY_MINUTES` (15). Truncated or HTML responses are rejected
    ("refusing to ingest") and reported in `/api/status` and in a banner on the dashboard.
 
