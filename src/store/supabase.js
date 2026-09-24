@@ -177,6 +177,7 @@ class SupabaseStore {
       order: 'snapshot_id.asc,alliance_id.asc',
     });
     return rows.map((r) => ({
+      snapshot_id: r.snapshot_id,
       alliance_id: r.alliance_id,
       tag: r.tag,
       members: r.members,

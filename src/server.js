@@ -9,7 +9,7 @@ const { createStore } = require('./store');
 const { Ingestor } = require('./ingest');
 const { buildOverview, buildHistory, buildBreakdowns, tribeName } = require('./views');
 const { buildCompare, CompareError, DEFAULT_RADIUS, MAX_RADIUS } = require('./compare');
-const { buildRegionDetail } = require('./regions');
+const { buildRegionDetail, buildAllianceTerritory } = require('./regions');
 const { applySecurityHeaders, sendEntry, sendJson, ResponseCache, RateLimiter, createStaticServer } = require('./http-utils');
 
 const TTL = 60 * 1000; // API responses change at most once a day; 60 s keeps the database quiet
@@ -205,6 +205,18 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
         if (!key) return sendJson(req, res, 400, { error: 'Provide a region key' });
         try {
           return await cached(req, res, url, TTL, () => buildRegionDetail(store, world, key, { getMap: loadMap }));
+        } catch (err) {
+          if (err instanceof CompareError) return sendJson(req, res, err.status, { error: err.message, ...err.extra });
+          throw err;
+        }
+      }
+
+      case '/api/alliance-regions': {
+        const idStr = (q.get('id') || '').trim();
+        const id = Number(idStr);
+        if (!idStr || !Number.isInteger(id) || id <= 0) return sendJson(req, res, 400, { error: 'Provide a numeric alliance id' });
+        try {
+          return await cached(req, res, url, TTL, () => buildAllianceTerritory(store, world, id, { getMap: loadMap }));
         } catch (err) {
           if (err instanceof CompareError) return sendJson(req, res, err.status, { error: err.message, ...err.extra });
           throw err;

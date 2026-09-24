@@ -248,11 +248,6 @@ async function openRegion(key) {
     } else if (!d.alliances.length) {
       body.append(h('p', { class: 'empty' }, 'No occupied villages found here right now.'));
     } else {
-      const allianceGrowthCell = (a, horizon) => {
-        const g = a.growth && a.growth[horizon];
-        if (!g || g.population_gain_pct === null || g.population_gain_pct === undefined) return h('span', { class: 'muted' }, '-');
-        return h('span', { class: g.population_gain_pct > 0 ? 'up' : g.population_gain_pct < 0 ? 'down' : 'muted' }, pctSigned(g.population_gain_pct));
-      };
       body.append(dataTable({
         columns: [
           { label: 'Alliance', cell: (a) => (a.alliance_id ? nameButton(`[${a.alliance_tag || a.alliance_id}]`, () => { body.closest('dialog').close(); openAlliance(a.alliance_id); }) : h('span', { class: 'muted' }, 'No alliance')) },
@@ -260,9 +255,9 @@ async function openRegion(key) {
           { label: 'Share', r: true, cell: (a) => fmt.pct(a.village_share, 0) },
           { label: 'Population', r: true, cell: (a) => fmt.int(a.population) },
           { label: 'Share', r: true, cell: (a) => fmt.pct(a.population_share, 0) },
-          { label: 'Last 24h', r: true, hint: 'Population change since the reference snapshot for the region’s 24h figure', cell: (a) => allianceGrowthCell(a, 'd1') },
-          { label: 'Last 3 days', r: true, hint: 'Population change since the reference snapshot for the region’s 3-day figure', cell: (a) => allianceGrowthCell(a, 'd3') },
-          { label: 'Last 7 days', r: true, hint: 'Population change since the reference snapshot for the region’s 7-day figure', cell: (a) => allianceGrowthCell(a, 'd7') },
+          { label: 'Last 24h', r: true, hint: 'Population change since the reference snapshot for the region’s 24h figure', cell: (a) => growthPctCell(a.growth, 'd1') },
+          { label: 'Last 3 days', r: true, hint: 'Population change since the reference snapshot for the region’s 3-day figure', cell: (a) => growthPctCell(a.growth, 'd3') },
+          { label: 'Last 7 days', r: true, hint: 'Population change since the reference snapshot for the region’s 7-day figure', cell: (a) => growthPctCell(a.growth, 'd7') },
         ],
         rows: d.alliances,
       }), h('p', { class: 'muted' }, "Villages/population are live as of this region's latest snapshot; Natar villages are not counted. The 24h/3d/7d columns need history that only starts accumulating once this feature is running, so they read ‘-’ until enough daily snapshots have passed for an alliance."));
@@ -270,9 +265,62 @@ async function openRegion(key) {
   });
 }
 
+/** One alliance's or one region's share-of-something changing over `horizon` ('d1'/'d3'/'d7'), as a signed %. */
+function growthPctCell(growth, horizon) {
+  const g = growth && growth[horizon];
+  if (!g || g.population_gain_pct === null || g.population_gain_pct === undefined) return h('span', { class: 'muted' }, '-');
+  return h('span', { class: g.population_gain_pct > 0 ? 'up' : g.population_gain_pct < 0 ? 'down' : 'muted' }, pctSigned(g.population_gain_pct));
+}
+
 function regionGrowthText(g) {
   if (!g) return h('span', { class: 'muted' }, 'not enough history yet');
   return h('span', null, deltaNode(g.villages_gain, { suffix: ' villages' }), ', ', deltaNode(g.population_gain, { suffix: ' population' }));
+}
+
+async function openAllianceTerritory(id) {
+  openModal('Alliance region control', async (body) => {
+    body.append(h('p', { class: 'empty' }, 'Loading...'));
+    const d = await api('alliance-regions', { id });
+    clear(body);
+    body.previousSibling.firstChild.textContent = `[${d.alliance_tag}]`;
+    body.append(h('div', { class: 'facts' },
+      h('span', null, 'Members ', h('b', null, fmt.int(d.totals.members))),
+      h('span', null, 'Villages ', h('b', null, fmt.int(d.totals.villages))),
+      h('span', null, 'Population ', h('b', null, fmt.int(d.totals.population))),
+      h('span', null, 'Regions held ', h('b', null, fmt.int(d.regions.length)))));
+
+    const chart = h('div');
+    body.append(h('h3', null, 'Population over time'), chart);
+    if (d.history.length >= 2) {
+      lineChart(chart, { series: [{ label: 'Population', color: seriesColor(1), points: d.history.map((r) => ({ t: Date.parse(r.taken_at), v: r.population })) }], height: 200, ariaLabel: `Population history of [${d.alliance_tag}]` });
+    } else {
+      chart.append(h('p', { class: 'muted' }, 'Snapshots are recorded once a day; the chart needs at least two.'));
+    }
+
+    body.append(h('h3', null, 'Alliance change over time'),
+      h('p', null, 'Last 24h: ', regionGrowthText(d.growth.d1), ' · Last 3 days: ', regionGrowthText(d.growth.d3), ' · Last 7 days: ', regionGrowthText(d.growth.d7)));
+
+    body.append(h('h3', null, 'Regions this alliance controls'));
+    if (!d.regions_available) {
+      body.append(h('p', { class: 'muted' }, 'Village-level detail is not available yet; it fills in with the next daily snapshot.'));
+    } else if (!d.regions.length) {
+      body.append(h('p', { class: 'empty' }, 'This alliance holds no villages in a named region right now.'));
+    } else {
+      body.append(dataTable({
+        columns: [
+          { label: 'Region', cell: (r) => nameButton(r.region, () => { body.closest('dialog').close(); openRegion(r.region); }) },
+          { label: 'Villages', r: true, cell: (r) => fmt.int(r.villages) },
+          { label: 'Share of region', r: true, cell: (r) => fmt.pct(r.village_share, 0) },
+          { label: 'Population', r: true, cell: (r) => fmt.int(r.population) },
+          { label: 'Share of region', r: true, cell: (r) => fmt.pct(r.population_share, 0) },
+          { label: 'Last 24h', r: true, hint: 'Population change since the reference snapshot for the alliance’s 24h figure', cell: (r) => growthPctCell(r.growth, 'd1') },
+          { label: 'Last 3 days', r: true, hint: 'Population change since the reference snapshot for the alliance’s 3-day figure', cell: (r) => growthPctCell(r.growth, 'd3') },
+          { label: 'Last 7 days', r: true, hint: 'Population change since the reference snapshot for the alliance’s 7-day figure', cell: (r) => growthPctCell(r.growth, 'd7') },
+        ],
+        rows: d.regions,
+      }), h('p', { class: 'muted' }, "Villages/population/shares are live as of the latest snapshot; Natar villages are not counted, and villages with no region in map.sql aren't shown here. The 24h/3d/7d columns need history that only starts accumulating once this feature is running, so they read ‘-’ until enough daily snapshots have passed for a given region."));
+    }
+  });
 }
 
 // ------------------------------------------------------------------ status / chrome
@@ -1000,6 +1048,51 @@ async function viewRegions(root, params, alive) {
   await load();
 }
 
+async function viewAllianceTerritory(root, params, alive) {
+  const st = { sort: params.get('sort') || 'population', dir: params.get('dir') === 'asc' ? 'asc' : 'desc' };
+  const results = h('div');
+  const onSort = (key) => {
+    if (st.sort === key) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
+    else {
+      st.sort = key;
+      st.dir = key === 'tag' ? 'asc' : 'desc';
+    }
+    syncHash();
+    load();
+  };
+  const syncHash = () => {
+    const q = new URLSearchParams();
+    q.set('sort', st.sort);
+    q.set('dir', st.dir);
+    history.replaceState(null, '', `#/territory?${q}`);
+  };
+  const columns = [
+    { label: '#', r: true, sort: 'rank', cell: (a) => fmt.int(a.rank) },
+    { label: 'Alliance', sort: 'tag', cell: (a) => nameButton(`[${a.tag}]`, () => openAllianceTerritory(a.id)) },
+    { label: 'Members', r: true, sort: 'members', cell: (a) => fmt.int(a.members) },
+    { label: 'Villages', r: true, sort: 'villages', cell: (a) => fmt.int(a.villages) },
+    { label: 'Population', r: true, sort: 'population', cell: (a) => fmt.int(a.population) },
+    { label: 'Change', r: true, sort: 'pop_delta', cell: (a) => deltaNode(a.pop_delta) },
+  ];
+  async function load() {
+    results.classList.add('loading');
+    try {
+      const data = await api('alliances', { sort: st.sort, dir: st.dir, limit: 50, offset: 0 });
+      if (!alive()) return;
+      clear(results).append(dataTable({ columns, rows: data.rows, sort: { key: st.sort, dir: st.dir }, onSort, empty: 'No alliances tracked yet.' }));
+    } catch (err) {
+      clear(results).append(h('p', { class: 'empty' }, `Could not load alliances: ${err.message}`));
+    } finally {
+      results.classList.remove('loading');
+    }
+  }
+  syncHash();
+  clear(root).append(h('div', { class: 'stack' },
+    card('Alliance region control', 'top 50 alliances by population; click one to see how much of each region it controls, and how that’s changed over the last 24h, 3 days and 7 days',
+      results)));
+  await load();
+}
+
 function renderEmpty(root) {
   const st = statusCache;
   const last = st && st.ingest && st.ingest.lastResult;
@@ -1017,8 +1110,8 @@ function renderEmpty(root) {
 }
 
 // ------------------------------------------------------------------ router
-const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, compare: viewCompare, regions: viewRegions };
-const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', compare: 'Compare', regions: 'Regions' };
+const routes = { overview: viewOverview, players: viewPlayers, alliances: viewAlliances, trends: viewTrends, activity: viewActivity, compare: viewCompare, regions: viewRegions, territory: viewAllianceTerritory };
+const titles = { overview: 'Overview', players: 'Players', alliances: 'Alliances', trends: 'Trends', activity: 'Activity', compare: 'Compare', regions: 'Regions', territory: 'Alliance Region Control' };
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');

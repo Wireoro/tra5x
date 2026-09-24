@@ -330,10 +330,14 @@ class MemoryStore {
   async getAllianceHistory(allianceIds, snapshotIds) {
     const a = new Set(allianceIds);
     const s = new Set(snapshotIds);
+    // `taken_at` is read from the live snapshots table, not a copy frozen at ingest time (SupabaseStore
+    // does the same via a join - see its own getAllianceHistory) - keeps this correct if a snapshot's
+    // taken_at is ever corrected after the fact, and matches the SupabaseStore semantics this mirrors.
+    const takenAt = new Map(this.snapshots.map((sn) => [sn.id, sn.taken_at]));
     return this.allianceHistory
       .filter((r) => a.has(r.alliance_id) && s.has(r.snapshot_id))
       .sort((x, y) => x.snapshot_id - y.snapshot_id)
-      .map(({ alliance_id, tag, members, villages, population, taken_at }) => ({ alliance_id, tag, members, villages, population, taken_at }));
+      .map(({ snapshot_id, alliance_id, tag, members, villages, population }) => ({ snapshot_id, alliance_id, tag, members, villages, population, taken_at: takenAt.get(snapshot_id) }));
   }
 
   async getMovers(world, dir, limit = 15) {
