@@ -105,10 +105,58 @@ function allianceRegionBreakdown(map, allianceId) {
         population: m.population,
         village_share: rt.villages ? m.villages / rt.villages : 0,
         population_share: rt.population ? m.population / rt.population : 0,
+        region_villages: rt.villages,
+        region_population: rt.population,
       };
     })
-    .sort((a, b) => b.population - a.population || b.villages - a.villages);
+    // by % of the region controlled (population_share) descending - each region has a different denominator
+    // (its own total), so this is NOT the same order as sorting by raw population.
+    .sort((a, b) => b.population_share - a.population_share || b.village_share - a.village_share || b.population - a.population);
   return { regions };
+}
+
+/**
+ * Villages belonging to `playerId` in `map`, grouped by region - players can settle in more than one region, so
+ * this answers "how is this player's population split across the game's regions". Same live-off-the-map pattern
+ * as regionAllianceBreakdown / allianceRegionBreakdown (current snapshot only, no stored history). Shares are
+ * against the PLAYER's own totals (not the region's), i.e. "what fraction of this player's population sits in
+ * this region". `villages` / `population` on the returned object are the player's grand totals, including any
+ * villages with no region recorded in map.sql (those aren't in the `regions` array, so the two can legitimately
+ * not add up - the caller can show both for context, same reasoning as region_population above).
+ * @returns {{regions:object[], villages:number, population:number}|null} null when the map has no region data
+ */
+function playerRegionBreakdown(map, playerId) {
+  if (!map || !Array.isArray(map.rg) || !Array.isArray(map.rn) || !Array.isArray(map.u) || !Array.isArray(map.pi) || !Array.isArray(map.t)) return null;
+
+  const byRegion = new Map(); // region index -> {villages, population}
+  let villages = 0;
+  let population = 0;
+  for (let v = 0; v < map.rg.length; v++) {
+    if (map.t[v] === NATAR_TRIBE) continue;
+    if (map.pi[map.u[v]] !== playerId) continue;
+    villages++;
+    population += map.p[v];
+    const ri = map.rg[v];
+    if (ri === -1) continue; // no region recorded for this village
+    let b = byRegion.get(ri);
+    if (!b) {
+      b = { villages: 0, population: 0 };
+      byRegion.set(ri, b);
+    }
+    b.villages++;
+    b.population += map.p[v];
+  }
+
+  const regions = [...byRegion.entries()]
+    .map(([ri, b]) => ({
+      region: map.rn[ri],
+      villages: b.villages,
+      population: b.population,
+      village_share: villages ? b.villages / villages : 0,
+      population_share: population ? b.population / population : 0,
+    }))
+    .sort((a, b) => b.population - a.population || b.villages - a.villages);
+  return { regions, villages, population };
 }
 
 /**
@@ -259,4 +307,4 @@ async function buildAllianceTerritory(store, world, allianceId, { getMap = null 
   };
 }
 
-module.exports = { buildRegionDetail, buildAllianceTerritory, regionAllianceBreakdown, allianceRegionBreakdown };
+module.exports = { buildRegionDetail, buildAllianceTerritory, regionAllianceBreakdown, allianceRegionBreakdown, playerRegionBreakdown };

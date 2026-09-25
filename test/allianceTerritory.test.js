@@ -44,10 +44,10 @@ test('allianceRegionBreakdown groups one alliance’s villages by region and sha
     rn: ['East', 'West'],
   };
   const mine = allianceRegionBreakdown(map, 10);
-  assert.deepEqual(mine.regions, [{ region: 'East', villages: 2, population: 150, village_share: 2 / 4, population_share: 150 / 200 }]);
+  assert.deepEqual(mine.regions, [{ region: 'East', villages: 2, population: 150, village_share: 2 / 4, population_share: 150 / 200, region_villages: 4, region_population: 200 }]);
 
   const other = allianceRegionBreakdown(map, 20);
-  assert.deepEqual(other.regions, [{ region: 'East', villages: 1, population: 30, village_share: 1 / 4, population_share: 30 / 200 }]);
+  assert.deepEqual(other.regions, [{ region: 'East', villages: 1, population: 30, village_share: 1 / 4, population_share: 30 / 200, region_villages: 4, region_population: 200 }]);
 
   assert.deepEqual(allianceRegionBreakdown(map, 999), { regions: [] }); // no villages anywhere
   assert.equal(allianceRegionBreakdown(null, 10), null);
@@ -85,9 +85,15 @@ test('buildAllianceTerritory: totals, the alliance’s own growth, and its live 
 
   assert.equal(d.regions_available, true);
   assert.equal(d.regions.length, expected.byRegion.size);
-  for (const r of d.regions) assert.equal(r.population, expected.byRegion.get(r.region));
-  // sorted by population descending
-  for (let i = 1; i < d.regions.length; i++) assert.ok(d.regions[i - 1].population >= d.regions[i].population);
+  for (const r of d.regions) {
+    assert.equal(r.population, expected.byRegion.get(r.region));
+    assert.equal(typeof r.region_population, 'number');
+    assert.ok(r.region_population >= r.population); // the region's own total includes this alliance's share
+    assert.equal(r.population_share, r.region_population ? r.population / r.region_population : 0);
+  }
+  // sorted by the alliance's share of each region (population_share) descending, NOT raw population -
+  // each region has a different denominator, so the two orders can legitimately differ
+  for (let i = 1; i < d.regions.length; i++) assert.ok(d.regions[i - 1].population_share >= d.regions[i].population_share);
 
   // the alliance's own growth (from alliance_history, same series the ordinary alliance dialog uses)
   const series = await store.getSnapshotSeries(config.world, 400);

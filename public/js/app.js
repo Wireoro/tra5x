@@ -167,7 +167,7 @@ function openModal(title, buildBody) {
 async function openPlayer(id) {
   openModal('Player', async (body) => {
     body.append(h('p', { class: 'empty' }, 'Loading...'));
-    const { player: p, history, events } = await api('players/' + id);
+    const { player: p, history, events, regions, regions_available } = await api('players/' + id);
     clear(body);
     body.previousSibling.firstChild.textContent = p.name;
     const facts = h('div', { class: 'facts' },
@@ -192,6 +192,23 @@ async function openPlayer(id) {
       lineChart(chart, { series: [{ label: 'Population', color: seriesColor(1), points: history.map((r) => ({ t: Date.parse(r.taken_at), v: r.population })) }], height: 200, ariaLabel: `Population history of ${p.name}` });
     } else {
       chart.append(h('p', { class: 'muted' }, 'Every player is recorded once a day; the chart needs at least two daily snapshots.'));
+    }
+    body.append(h('h3', null, 'Population by region'));
+    if (!regions_available) {
+      body.append(h('p', { class: 'muted' }, 'Village-level detail is not available yet; it fills in with the next daily snapshot.'));
+    } else if (!regions.length) {
+      body.append(h('p', { class: 'empty' }, 'This player holds no villages in a named region right now.'));
+    } else {
+      body.append(dataTable({
+        columns: [
+          { label: 'Region', cell: (r) => nameButton(r.region, () => { body.closest('dialog').close(); openRegion(r.region); }) },
+          { label: 'Villages', r: true, cell: (r) => fmt.int(r.villages) },
+          { label: 'Share of this player', r: true, cell: (r) => fmt.pct(r.village_share, 0) },
+          { label: 'Population', r: true, cell: (r) => fmt.int(r.population) },
+          { label: 'Share of this player', r: true, cell: (r) => fmt.pct(r.population_share, 0) },
+        ],
+        rows: regions,
+      }), h('p', { class: 'muted' }, `Players can settle in more than one region, so this splits ${fmt.int(p.population)} population across ${fmt.int(p.villages)} villages by region. Shares are of this player's own total, not the region's. Natar villages are not counted, and villages with no region in map.sql aren't shown here, so the rows may not add up to the player's totals above.`));
     }
     if (events && events.length) body.append(h('h3', null, 'Recent activity'), dataTable({ columns: eventColumns(), rows: events }));
   });
@@ -308,7 +325,9 @@ async function openAllianceTerritory(id) {
     } else {
       body.append(dataTable({
         columns: [
-          { label: 'Region', cell: (r) => nameButton(r.region, () => { body.closest('dialog').close(); openRegion(r.region); }) },
+          { label: 'Region', cell: (r) => h('div', null,
+              nameButton(r.region, () => { body.closest('dialog').close(); openRegion(r.region); }),
+              h('span', { class: 'cell-sub' }, `${fmt.int(r.region_population)} population in region`)) },
           { label: 'Villages', r: true, cell: (r) => fmt.int(r.villages) },
           { label: 'Share of region', r: true, cell: (r) => fmt.pct(r.village_share, 0) },
           { label: 'Population', r: true, cell: (r) => fmt.int(r.population) },
@@ -318,7 +337,7 @@ async function openAllianceTerritory(id) {
           { label: 'Last 7 days', r: true, hint: 'Population change since the reference snapshot for the alliance’s 7-day figure', cell: (r) => growthPctCell(r.growth, 'd7') },
         ],
         rows: d.regions,
-      }), h('p', { class: 'muted' }, "Villages/population/shares are live as of the latest snapshot; Natar villages are not counted, and villages with no region in map.sql aren't shown here. The 24h/3d/7d columns need history that only starts accumulating once this feature is running, so they read ‘-’ until enough daily snapshots have passed for a given region."));
+      }), h('p', { class: 'muted' }, "Sorted by the alliance’s share of each region’s population, highest first. Villages/population/shares are live as of the latest snapshot; Natar villages are not counted, and villages with no region in map.sql aren't shown here. The 24h/3d/7d columns need history that only starts accumulating once this feature is running, so they read ‘-’ until enough daily snapshots have passed for a given region."));
     }
   });
 }

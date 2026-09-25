@@ -9,7 +9,7 @@ const { createStore } = require('./store');
 const { Ingestor } = require('./ingest');
 const { buildOverview, buildHistory, buildBreakdowns, tribeName } = require('./views');
 const { buildCompare, CompareError, DEFAULT_RADIUS, MAX_RADIUS } = require('./compare');
-const { buildRegionDetail, buildAllianceTerritory } = require('./regions');
+const { buildRegionDetail, buildAllianceTerritory, playerRegionBreakdown } = require('./regions');
 const { applySecurityHeaders, sendEntry, sendJson, ResponseCache, RateLimiter, createStaticServer } = require('./http-utils');
 
 const TTL = 60 * 1000; // API responses change at most once a day; 60 s keeps the database quiet
@@ -238,8 +238,24 @@ function createApp({ config = defaultConfig, store, ingestor, logger = console }
       const id = Number(m[1]);
       const player = await store.getPlayer(world, id);
       if (!player) return sendJson(req, res, 404, { error: 'Player not found' });
-      const [history, events] = await Promise.all([store.getPlayerHistory(id, 400), store.getEvents(world, { playerId: id, limit: 25 })]);
-      return sendJson(req, res, 200, { player: { ...player, tribe_name: tribeName(player.tribe) }, history, events: events.rows });
+      const [history, events, map] = await Promise.all([
+        store.getPlayerHistory(id, 400),
+        store.getEvents(world, { playerId: id, limit: 25 }),
+        loadMap(),
+      ]);
+      let regions = null;
+      try {
+        regions = playerRegionBreakdown(map, id);
+      } catch {
+        regions = null;
+      }
+      return sendJson(req, res, 200, {
+        player: { ...player, tribe_name: tribeName(player.tribe) },
+        history,
+        events: events.rows,
+        regions: regions ? regions.regions : [],
+        regions_available: regions !== null,
+      });
     }
 
     const a = /^\/api\/alliances\/(\d+)$/.exec(p);
